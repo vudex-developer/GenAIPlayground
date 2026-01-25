@@ -21,8 +21,8 @@ export const useAutoSave = (
     onError
   } = options
 
-  const savedDataRef = useRef<string>()
-  const timerRef = useRef<number>()
+  const savedDataRef = useRef<string | undefined>(undefined)
+  const timerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     if (!enabled) return
@@ -37,9 +37,9 @@ export const useAutoSave = (
         }
 
         savedDataRef.current = serialized
-        onSave?.()
+        if (onSave) onSave()
       } catch (error) {
-        onError?.(error instanceof Error ? error : new Error(String(error)))
+        if (onError) onError(error instanceof Error ? error : new Error(String(error)))
       }
     }
 
