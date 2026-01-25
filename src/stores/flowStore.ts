@@ -197,12 +197,19 @@ const formatErrorMessage = (error: unknown): string => {
   return error.message
 }
 
-const sanitizeNodesForStorage = (nodes: WorkflowNode[]): WorkflowNode[] =>
+const sanitizeNodesForStorage = (nodes: WorkflowNode[], forExport = false): WorkflowNode[] =>
   nodes.map((node) => {
     const data = { ...(node.data as Record<string, unknown>) }
-    delete data.imageDataUrl
-    delete data.outputImageDataUrl
-    delete data.inputImageDataUrl
+    
+    // For Export: Keep base64 data for portability
+    // For localStorage: Remove to save space
+    if (!forExport) {
+      delete data.imageDataUrl
+      delete data.outputImageDataUrl
+      delete data.inputImageDataUrl
+    }
+    
+    // Always remove blob URLs (they don't survive page reload)
     if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('blob:')) {
       delete data.imageUrl
       delete data.width
@@ -214,20 +221,25 @@ const sanitizeNodesForStorage = (nodes: WorkflowNode[]): WorkflowNode[] =>
     if (typeof data.outputVideoUrl === 'string' && data.outputVideoUrl.startsWith('blob:')) {
       delete data.outputVideoUrl
     }
+    
+    // Reset status for all generation nodes
     if (node.type === 'nanoImage') {
       data.status = 'idle'
       delete data.error
+      delete data.lastExecutionTime
     }
     if (node.type === 'geminiVideo') {
       data.status = 'idle'
       data.progress = 0
       delete data.error
+      delete data.lastExecutionTime
     }
     if (node.type === 'klingVideo') {
       data.status = 'idle'
       data.progress = 0
       delete data.error
       delete data.taskId
+      delete data.lastExecutionTime
     }
     return { ...node, data: data as NodeData }
   })
@@ -360,14 +372,39 @@ export const useFlowStore = create<FlowState>()(
   },
   importWorkflow: (nodes, edges) => {
     try {
+      // Clear history to start fresh with imported workflow
       set({
         nodes,
         edges: normalizeEdges(edges, nodes),
         selectedNodeId: null,
+        history: [{ nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) }],
+        historyIndex: 0,
       })
-      saveToHistory(get, set)
+      
+      // Force save to localStorage immediately
+      // This ensures the imported workflow persists after refresh
+      const state = get()
+      const storageKey = 'nano-banana-workflow-v3'
+      try {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            state: {
+              nodes: sanitizeNodesForStorage(state.nodes),
+              edges: sanitizeEdgesForStorage(state.edges),
+              apiKey: state.apiKey,
+              klingApiKey: state.klingApiKey,
+            },
+            version: 0,
+          })
+        )
+      } catch (storageError) {
+        console.warn('Failed to save imported workflow to localStorage:', storageError)
+      }
+      
       return true
-    } catch {
+    } catch (error) {
+      console.error('Import workflow failed:', error)
       return false
     }
   },
@@ -376,7 +413,7 @@ export const useFlowStore = create<FlowState>()(
     return JSON.stringify({
       version: '1.0',
       timestamp: new Date().toISOString(),
-      nodes: sanitizeNodesForStorage(nodes),
+      nodes: sanitizeNodesForStorage(nodes, true), // Keep base64 for export
       edges: sanitizeEdgesForStorage(edges),
     }, null, 2)
   },
