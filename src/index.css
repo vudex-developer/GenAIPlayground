@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  color: #e2e8f0;
+  background-color: #0b0f14;
+  background-image: radial-gradient(
+    1200px circle at 15% 20%,
+    rgba(30, 41, 59, 0.35),
+    transparent 55%
+  );
+}
+
+/* Text Prompt - violet-400 */
+.react-flow__edge.edge-text-prompt .react-flow__edge-path {
+  stroke: rgb(167, 139, 250);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(167, 139, 250, 0.5));
+}
+
+/* Motion Prompt - fuchsia-400 */
+.react-flow__edge.edge-motion-prompt .react-flow__edge-path {
+  stroke: rgb(232, 121, 249);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(232, 121, 249, 0.5));
+}
+
+/* Image Import - cyan-400 */
+.react-flow__edge.edge-image-import .react-flow__edge-path {
+  stroke: rgb(34, 211, 238);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.5));
+}
+
+/* Nano Banana - yellow-400 */
+.react-flow__edge.edge-nano-image .react-flow__edge-path {
+  stroke: rgb(250, 204, 21);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(250, 204, 21, 0.5));
+}
+
+/* Gemini Video - blue-400 */
+.react-flow__edge.edge-gemini-video .react-flow__edge-path {
+  stroke: rgb(96, 165, 250);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(96, 165, 250, 0.5));
+}
+
+/* Kling Video - green-400 */
+.react-flow__edge.edge-kling-video .react-flow__edge-path {
+  stroke: rgb(74, 222, 128);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(74, 222, 128, 0.5));
+}
+
+/* Default */
+.react-flow__edge.edge-default .react-flow__edge-path {
+  stroke: rgba(148, 163, 184, 0.7);
+  filter: drop-shadow(0 0 4px rgba(148, 163, 184, 0.4));
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+.react-flow__connection-path {
+  stroke: rgb(167, 139, 250);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(167, 139, 250, 0.5));
+}
+
+.react-flow__controls {
+  background: rgba(15, 20, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 24px rgba(3, 7, 18, 0.35);
+  border-radius: 12px;
+  left: 5rem !important;
+  bottom: 1rem !important;
+  opacity: 0.95;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.react-flow__controls-button {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #94a3b8;
+  width: 32px;
+  height: 32px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+}
+
+.react-flow__controls-button svg {
+  max-width: 14px;
+  max-height: 14px;
+}
+
+.react-flow__minimap {
+  background: rgba(15, 20, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 24px rgba(3, 7, 18, 0.35);
+  border-radius: 12px;
+  right: 1rem !important;
+  bottom: 1rem !important;
+  opacity: 0.95;
+}
+
+.react-flow__minimap-mask {
+  fill: rgba(148, 163, 184, 0.08);
+  stroke: rgba(148, 163, 184, 0.2);
+}
+
+.react-flow__minimap-node {
+  fill: rgba(148, 163, 184, 0.4);
+  stroke: rgba(148, 163, 184, 0.5);
+}
+
+.node-card {
+  box-shadow: 0 10px 24px rgba(3, 7, 18, 0.25);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.node-card:hover {
+  box-shadow: 0 14px 32px rgba(3, 7, 18, 0.35);
+  transform: translateY(-1px);
+}
+
+@media (prefers-color-scheme: dark) {
+  .node-card:hover {
+    box-shadow: 0 14px 32px rgba(3, 7, 18, 0.45);
+  }
+}
