@@ -190,7 +190,7 @@ function App() {
                       normalizeNodesForFile(parsed.nodes),
                       parsed.edges,
                     )
-                    setSaveStatus(ok ? '파일 불러옴' : '파일 불러오기 실패')
+                    setSaveStatus(ok ? `${parsed.nodes?.length ?? 0}개 노드 추가됨` : '파일 불러오기 실패')
                   } catch {
                     setSaveStatus('파일 읽기 실패')
                   } finally {

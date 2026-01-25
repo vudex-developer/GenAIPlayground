@@ -372,35 +372,66 @@ export const useFlowStore = create<FlowState>()(
   },
   importWorkflow: (nodes, edges) => {
     try {
-      // Clear history to start fresh with imported workflow
-      set({
-        nodes,
-        edges: normalizeEdges(edges, nodes),
-        selectedNodeId: null,
-        history: [{ nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) }],
-        historyIndex: 0,
+      const currentState = get()
+      const existingNodes = currentState.nodes
+      const existingEdges = currentState.edges
+      
+      // Create ID mapping to avoid conflicts
+      const idMap = new Map<string, string>()
+      const existingIds = new Set(existingNodes.map(n => n.id))
+      
+      // Generate new IDs for imported nodes if they conflict
+      const newNodes = nodes.map(node => {
+        let newId = node.id
+        
+        // If ID already exists, generate a new one
+        if (existingIds.has(newId)) {
+          newId = `${node.type}-${crypto.randomUUID?.() ?? Date.now()}`
+        }
+        
+        idMap.set(node.id, newId)
+        
+        // Calculate offset: place imported nodes to the right of existing nodes
+        const maxX = existingNodes.length > 0 
+          ? Math.max(...existingNodes.map(n => n.position.x + 250))
+          : 0
+        
+        return {
+          ...node,
+          id: newId,
+          position: {
+            x: node.position.x + maxX + 50,
+            y: node.position.y
+          },
+          selected: false,
+        }
       })
       
-      // Force save to localStorage immediately
-      // This ensures the imported workflow persists after refresh
-      const state = get()
-      const storageKey = 'nano-banana-workflow-v3'
-      try {
-        localStorage.setItem(
-          storageKey,
-          JSON.stringify({
-            state: {
-              nodes: sanitizeNodesForStorage(state.nodes),
-              edges: sanitizeEdgesForStorage(state.edges),
-              apiKey: state.apiKey,
-              klingApiKey: state.klingApiKey,
-            },
-            version: 0,
-          })
-        )
-      } catch (storageError) {
-        console.warn('Failed to save imported workflow to localStorage:', storageError)
-      }
+      // Update edge IDs to match new node IDs
+      const newEdges = edges.map(edge => {
+        const newSource = idMap.get(edge.source) ?? edge.source
+        const newTarget = idMap.get(edge.target) ?? edge.target
+        
+        return {
+          ...edge,
+          id: `${newSource}-${edge.sourceHandle ?? 'output'}-${newTarget}-${edge.targetHandle ?? 'input'}`,
+          source: newSource,
+          target: newTarget,
+        }
+      })
+      
+      // Merge with existing nodes and edges
+      const mergedNodes = [...existingNodes, ...newNodes]
+      const mergedEdges = normalizeEdges([...existingEdges, ...newEdges], mergedNodes)
+      
+      set({
+        nodes: mergedNodes,
+        edges: mergedEdges,
+        selectedNodeId: null,
+      })
+      
+      // Save to history
+      saveToHistory(get, set)
       
       return true
     } catch (error) {
