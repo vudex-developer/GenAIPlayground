@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { ReactFlowProvider } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Download, FolderOpen, Save, Settings, Undo2, Redo2 } from 'lucide-react'
+import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff } from 'lucide-react'
 import Canvas from './components/Canvas'
+import { OnboardingGuide } from './components/OnboardingGuide'
 import { useFlowStore } from './stores/flowStore'
+import { useNetworkStatus } from './hooks/useNetworkStatus'
 import type { WorkflowEdge, WorkflowNode } from './types/nodes'
 import vudexLogo from './assets/vudex-logo.png'
 
@@ -21,6 +23,7 @@ function App() {
   const setKlingApiKey = useFlowStore((state) => state.setKlingApiKey)
   const [showSettings, setShowSettings] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
+  const isOnline = useNetworkStatus()
 
   // Keyboard shortcuts for Undo/Redo
   useEffect(() => {
@@ -215,6 +218,15 @@ function App() {
         </div>
       </header>
 
+      {!isOnline && (
+        <div className="flex items-center justify-center gap-2 bg-yellow-500/10 border-b border-yellow-500/30 px-4 py-2 text-yellow-400">
+          <WifiOff className="h-4 w-4" />
+          <span className="text-xs font-medium">
+            오프라인 모드 - 인터넷 연결을 확인해주세요
+          </span>
+        </div>
+      )}
+
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1">
           <ReactFlowProvider>
@@ -290,6 +302,8 @@ function App() {
           </div>
         </div>
       ) : null}
+
+      <OnboardingGuide />
     </div>
   )
 }
