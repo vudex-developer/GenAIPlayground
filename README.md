@@ -1,14 +1,38 @@
-# Nano Banana Studio
+# 🍌 Nano Banana Studio
 
-AI 기반 이미지-투-비디오 워크플로우 빌더
+**AI 기반 이미지 & 비디오 생성 워크플로우 빌더**
 
-## 특징
+노드 기반 비주얼 에디터로 AI 생성 파이프라인을 쉽게 구축하세요!
 
-- 🎨 **노드 기반 워크플로우**: React Flow를 활용한 직관적인 비주얼 편집기
-- 🤖 **AI 통합**: Google Gemini, Kling AI API 지원
-- 🎬 **비디오 생성**: 이미지에서 고품질 비디오 생성
-- 💾 **워크플로우 저장/불러오기**: JSON 파일 및 localStorage 지원
-- 🌙 **다크 모드**: 눈에 편한 다크 테마
+---
+
+## ✨ 주요 기능
+
+### 🎨 **노드 기반 워크플로우**
+- React Flow 기반 직관적인 비주얼 편집기
+- 드래그 앤 드롭으로 노드 연결
+- 실시간 미리보기
+
+### 🤖 **AI 통합**
+- **Nano Banana (Imagen 3)**: 고품질 이미지 생성
+- **Gemini Video (Veo)**: 텍스트/이미지에서 비디오 생성
+- **Kling Video**: 프로페셔널 비디오 생성
+
+### ⏪ **Undo/Redo**
+- ⌘Z / Ctrl+Z: 되돌리기
+- ⌘⇧Z / Ctrl+Shift+Z: 다시 실행
+- 최근 20개 상태 자동 저장
+
+### 💾 **Export/Import**
+- 워크플로우를 JSON 파일로 저장
+- 팀원들과 워크플로우 공유
+- 데이터 손실 방지
+
+### 🎬 **고급 기능**
+- 생성 중 Stop 기능
+- 실시간 진행률 표시
+- 사용자 친화적 에러 메시지
+- 다크 모드 UI
 
 ## 지원 노드
 
@@ -100,18 +124,134 @@ Kling AI API는 브라우저에서 직접 호출 시 CORS 에러가 발생합니
 - **Icons**: Lucide React
 - **Backend**: Express.js (Proxy Server)
 
-## 워크플로우 사용법
+## 📖 사용 방법
 
-1. 좌측 툴바에서 노드를 클릭하여 캔버스에 추가
-2. 노드 간 연결선(핸들)을 드래그하여 워크플로우 구성
-3. 각 노드에 필요한 데이터 입력
-4. 각 노드의 **실행** 버튼을 클릭하여 개별 실행
+### 1️⃣ **워크플로우 구성**
+```
+1. 좌측 팔레트에서 노드를 클릭하여 캔버스에 추가
+2. 노드 핸들을 드래그하여 연결
+3. 노드를 클릭하여 우측 패널에서 설정
+4. 각 노드의 "실행" 버튼 클릭
+```
 
-## Mock 모드
+### 2️⃣ **빠른 입력**
+- **TextPrompt 노드**: 노드 안에서 바로 프롬프트 작성
+- **ImageImport 노드**: 노드 안에서 바로 이미지 업로드
+
+### 3️⃣ **키보드 단축키**
+- `⌘Z` / `Ctrl+Z`: 되돌리기
+- `⌘⇧Z` / `Ctrl+Shift+Z`: 다시 실행
+- `Delete`: 선택한 노드 삭제
+
+### 4️⃣ **워크플로우 저장/공유**
+```
+1. Export 버튼 → JSON 파일 저장
+2. 팀원에게 파일 공유
+3. Import 버튼 → JSON 파일 불러오기
+```
+
+---
+
+## 🚀 배포 (팀 공유)
+
+### ⚡ 가장 빠른 방법 (5분)
+```bash
+cd /Users/lukemacbookpro/nano-banana-studio
+npx vercel
+```
+→ URL이 생성되면 팀원들에게 공유!
+
+### 📝 자세한 배포 가이드
+`DEPLOYMENT.md` 파일을 참고하세요.
+
+---
+
+## 💡 Mock 모드
 
 API 키 없이 테스트하려면 API 키 입력란을 비워두세요.
 Mock 모드에서는 샘플 데이터로 동작합니다.
 
-## 라이선스
+---
+
+## 🎯 예제 워크플로우
+
+### 이미지 생성
+```
+TextPrompt → Nano Banana
+```
+
+### 이미지 업스케일
+```
+ImageImport → TextPrompt → Nano Banana
+```
+
+### 비디오 생성
+```
+TextPrompt → MotionPrompt → Gemini Video
+```
+
+### 이미지-투-비디오
+```
+ImageImport → MotionPrompt → Kling Video
+```
+
+---
+
+## 📦 프로젝트 구조
+
+```
+nano-banana-studio/
+├── src/
+│   ├── components/      # UI 컴포넌트
+│   │   ├── nodes/       # 노드 컴포넌트
+│   │   └── icons/       # 커스텀 아이콘
+│   ├── stores/          # Zustand 스토어
+│   ├── services/        # API 클라이언트
+│   ├── types/           # TypeScript 타입
+│   └── assets/          # 이미지, 로고
+├── server/              # 프록시 서버
+└── dist/                # 빌드 결과물
+```
+
+---
+
+## 🛠️ 개발
+
+### 코드 수정 후 자동 재배포 (GitHub + Vercel)
+```bash
+git add .
+git commit -m "Update: ..."
+git push
+```
+→ Vercel이 자동으로 재배포!
+
+---
+
+## 🆘 문제 해결
+
+### Q: 이미지 생성이 안 돼요
+A: API 키를 확인하세요. 우측 상단 "API Key" 버튼에서 입력.
+
+### Q: "할당량 초과" 오류
+A: Google AI Studio에서 할당량을 확인하세요.
+
+### Q: Kling Video 오류
+A: 프록시 서버가 실행 중인지 확인 (`npm run dev:all`).
+
+### Q: 캐시 지우면 데이터가 사라져요
+A: Export 버튼으로 백업하세요!
+
+---
+
+## 📄 라이선스
 
 MIT
+
+---
+
+## 🙏 크레딧
+
+- React Flow
+- Google Gemini API
+- Kling AI API
+- VUDEX
