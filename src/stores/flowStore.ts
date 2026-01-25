@@ -10,6 +10,7 @@ import {
 } from 'reactflow'
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
 import { KlingAPIClient, MockKlingAPI } from '../services/klingAPI'
+import { retryWithBackoff } from '../utils/retry'
 import type {
   GeminiVideoNodeData,
   ImageImportNodeData,
@@ -408,6 +409,37 @@ export const useFlowStore = create<FlowState>()(
     const current = nodes.find((node) => node.id === id)
     if (!current || current.type !== 'nanoImage') return
 
+    // ✅ Prevent duplicate execution
+    const currentData = current.data as NanoImageNodeData
+    if (currentData.status === 'processing') {
+      console.warn('⚠️ Node is already processing, skipping duplicate execution')
+      return
+    }
+
+    // ✅ Rate limiting: Check last execution time
+    const now = Date.now()
+    const lastExecution = (currentData as any).lastExecutionTime || 0
+    const minInterval = 3000 // 3 seconds minimum between executions
+    
+    if (now - lastExecution < minInterval) {
+      const waitTime = Math.ceil((minInterval - (now - lastExecution)) / 1000)
+      set({
+        nodes: nodes.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'error',
+                  error: `너무 빠르게 실행했습니다. ${waitTime}초 후 다시 시도해주세요.`,
+                },
+              }
+            : node,
+        ),
+      })
+      return
+    }
+
     // Create abort controller for this execution
     const abortController = new AbortController()
     abortControllers.set(id, abortController)
@@ -460,6 +492,7 @@ export const useFlowStore = create<FlowState>()(
       ...prev,
       status: 'processing',
       error: undefined,
+      lastExecutionTime: now,
     }))
 
     const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
@@ -477,20 +510,32 @@ export const useFlowStore = create<FlowState>()(
         : prompt
       const model = data.model ?? 'gemini-3-pro-image-preview'
       
-      // Debug log for aspect ratio
-      console.log('🎨 Nano Image Generation Settings:', {
+      console.log('🎨 Nano Image Generation:', {
         model,
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
-        prompt: finalPrompt.substring(0, 50) + '...'
       })
       
-      const result = await client.generateImage(
-        finalPrompt,
-        data.aspectRatio,
-        inputImageDataUrl,
-        model,
-        data.resolution,
+      // ✅ Apply retry logic with exponential backoff
+      const result = await retryWithBackoff(
+        () => client.generateImage(
+          finalPrompt,
+          data.aspectRatio,
+          inputImageDataUrl,
+          model,
+          data.resolution,
+        ),
+        {
+          maxAttempts: 3,
+          initialDelay: 1000,
+          onRetry: (attempt, error) => {
+            console.warn(`🔄 Retry attempt ${attempt}:`, error.message)
+            updateNode((prev) => ({
+              ...prev,
+              error: `재시도 중... (${attempt}/3)`,
+            }))
+          },
+        }
       )
 
       // Check if aborted after completion
@@ -506,14 +551,17 @@ export const useFlowStore = create<FlowState>()(
         generatedModel: model,
         generatedResolution: data.resolution,
         generatedAspectRatio: data.aspectRatio,
-        error: undefined, // Clear any previous errors
+        error: undefined,
       }))
     } catch (error) {
-      updateNode((prev) => ({
-        ...prev,
-        status: 'error',
-        error: formatErrorMessage(error),
-      }))
+      // Don't show retry errors if aborted
+      if (!abortController.signal.aborted) {
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: formatErrorMessage(error),
+        }))
+      }
     } finally {
       // Clean up abort controller
       const controllers = get().abortControllers
@@ -525,6 +573,37 @@ export const useFlowStore = create<FlowState>()(
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
     if (!current || current.type !== 'geminiVideo') return
+
+    // ✅ Prevent duplicate execution
+    const currentData = current.data as GeminiVideoNodeData
+    if (currentData.status === 'processing') {
+      console.warn('⚠️ Gemini node is already processing')
+      return
+    }
+
+    // ✅ Rate limiting
+    const now = Date.now()
+    const lastExecution = (currentData as any).lastExecutionTime || 0
+    const minInterval = 5000 // 5 seconds for video (longer than image)
+    
+    if (now - lastExecution < minInterval) {
+      const waitTime = Math.ceil((minInterval - (now - lastExecution)) / 1000)
+      set({
+        nodes: nodes.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'error',
+                  error: `너무 빠르게 실행했습니다. ${waitTime}초 후 다시 시도해주세요.`,
+                },
+              }
+            : node,
+        ),
+      })
+      return
+    }
 
     // Create abort controller for this execution
     const abortController = new AbortController()
@@ -579,11 +658,12 @@ export const useFlowStore = create<FlowState>()(
     updateNode((prev) => ({
       ...prev,
       status: 'processing',
-      error: undefined, // Clear any previous errors
+      error: undefined,
       inputImageUrl,
       inputImageDataUrl,
       inputPrompt,
       progress: 10,
+      lastExecutionTime: now,
     }))
 
     const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
@@ -601,25 +681,38 @@ export const useFlowStore = create<FlowState>()(
     }, 500)
 
     try {
-      // Check if aborted before starting
       if (abortController.signal.aborted) {
         throw new Error('작업이 취소되었습니다.')
       }
 
       const settings = current.data as GeminiVideoNodeData
-      const outputVideoUrl = await client.generateMedia(
-        inputPrompt,
+      
+      // ✅ Apply retry logic
+      const outputVideoUrl = await retryWithBackoff(
+        () => client.generateMedia(
+          inputPrompt,
+          {
+            mediaType: 'video',
+            duration: settings.duration,
+            quality: settings.quality,
+            motionIntensity: settings.motionIntensity,
+          },
+          inputImageDataUrl,
+          settings.model,
+        ),
         {
-          mediaType: 'video',
-          duration: settings.duration,
-          quality: settings.quality,
-          motionIntensity: settings.motionIntensity,
-        },
-        inputImageDataUrl,
-        settings.model,
+          maxAttempts: 2, // Less retries for video (expensive)
+          initialDelay: 2000,
+          onRetry: (attempt) => {
+            console.warn(`🔄 Gemini Video retry ${attempt}/2`)
+            updateNode((prev) => ({
+              ...prev,
+              error: `재시도 중... (${attempt}/2)`,
+            }))
+          },
+        }
       )
 
-      // Check if aborted after completion
       if (abortController.signal.aborted) {
         throw new Error('작업이 취소되었습니다.')
       }
@@ -629,18 +722,19 @@ export const useFlowStore = create<FlowState>()(
         status: 'completed',
         outputVideoUrl,
         progress: 100,
-        error: undefined, // Clear any previous errors
+        error: undefined,
       }))
 
     } catch (error) {
-      updateNode((prev) => ({
-        ...prev,
-        status: 'error',
-        error: formatErrorMessage(error),
-      }))
+      if (!abortController.signal.aborted) {
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: formatErrorMessage(error),
+        }))
+      }
     } finally {
       clearInterval(progressTimer)
-      // Clean up abort controller
       const controllers = get().abortControllers
       controllers.delete(id)
       set({ abortControllers: new Map(controllers) })
@@ -650,6 +744,37 @@ export const useFlowStore = create<FlowState>()(
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
     if (!current || current.type !== 'klingVideo') return
+
+    // ✅ Prevent duplicate execution
+    const currentData = current.data as KlingVideoNodeData
+    if (currentData.status === 'processing') {
+      console.warn('⚠️ Kling node is already processing')
+      return
+    }
+
+    // ✅ Rate limiting
+    const now = Date.now()
+    const lastExecution = (currentData as any).lastExecutionTime || 0
+    const minInterval = 5000 // 5 seconds for video
+    
+    if (now - lastExecution < minInterval) {
+      const waitTime = Math.ceil((minInterval - (now - lastExecution)) / 1000)
+      set({
+        nodes: nodes.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'error',
+                  error: `너무 빠르게 실행했습니다. ${waitTime}초 후 다시 시도해주세요.`,
+                },
+              }
+            : node,
+        ),
+      })
+      return
+    }
 
     // Create abort controller for this execution
     const abortController = new AbortController()
@@ -737,13 +862,14 @@ export const useFlowStore = create<FlowState>()(
     updateNode((prev) => ({
       ...prev,
       status: 'processing',
-      error: undefined, // Clear any previous errors
+      error: undefined,
       inputImageUrl,
       inputImageDataUrl,
       endImageUrl,
       endImageDataUrl,
       inputPrompt,
       progress: 10,
+      lastExecutionTime: now,
     }))
 
     const klingApiKey = get().klingApiKey || import.meta.env.VITE_KLING_API_KEY || ''
@@ -767,7 +893,6 @@ export const useFlowStore = create<FlowState>()(
     }, 1000)
 
     try {
-      // Check if aborted before starting
       if (abortController.signal.aborted) {
         throw new Error('작업이 취소되었습니다.')
       }
@@ -782,19 +907,32 @@ export const useFlowStore = create<FlowState>()(
           }
         : undefined
 
-      const outputVideoUrl = await client.generateVideo(
-        inputPrompt,
-        inputImageDataUrl,
+      // ✅ Apply retry logic
+      const outputVideoUrl = await retryWithBackoff(
+        () => client.generateVideo(
+          inputPrompt,
+          inputImageDataUrl,
+          {
+            duration: settings.duration,
+            aspectRatio: settings.aspectRatio,
+            model: settings.model,
+            endImageDataUrl: endImageDataUrl,
+            cameraControl: cameraControl,
+          },
+        ),
         {
-          duration: settings.duration,
-          aspectRatio: settings.aspectRatio,
-          model: settings.model,
-          endImageDataUrl: endImageDataUrl,
-          cameraControl: cameraControl,
-        },
+          maxAttempts: 2, // Less retries for video (expensive)
+          initialDelay: 2000,
+          onRetry: (attempt) => {
+            console.warn(`🔄 Kling Video retry ${attempt}/2`)
+            updateNode((prev) => ({
+              ...prev,
+              error: `재시도 중... (${attempt}/2)`,
+            }))
+          },
+        }
       )
 
-      // Check if aborted after completion
       if (abortController.signal.aborted) {
         throw new Error('작업이 취소되었습니다.')
       }
@@ -806,18 +944,19 @@ export const useFlowStore = create<FlowState>()(
         status: 'completed',
         outputVideoUrl,
         progress: 100,
-        error: undefined, // Clear any previous errors
+        error: undefined,
       }))
     } catch (error) {
       console.error('❌ Kling Video 생성 실패:', error)
-      updateNode((prev) => ({
-        ...prev,
-        status: 'error',
-        error: formatErrorMessage(error),
-      }))
+      if (!abortController.signal.aborted) {
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: formatErrorMessage(error),
+        }))
+      }
     } finally {
       clearInterval(progressTimer)
-      // Clean up abort controller
       const controllers = get().abortControllers
       controllers.delete(id)
       set({ abortControllers: new Map(controllers) })
