@@ -2,7 +2,7 @@
 
 # 사용자 정의 자동 저장 스크립트
 
-REPO_DIR="/Users/lukemacbookpro/nano-banana-studio"
+REPO_DIR="/Users/lukemacbookpro/gen-ai-playground"
 INTERVAL=60  # 👈 여기 숫자 변경! (초 단위: 60=1분, 300=5분, 600=10분)
 
 echo "🔄 자동 저장 시작 (${INTERVAL}초마다)"

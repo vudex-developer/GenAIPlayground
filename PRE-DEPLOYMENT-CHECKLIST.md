@@ -141,14 +141,14 @@ git push -u origin main
 ## 📋 팀원 배포 안내 메시지
 
 ```markdown
-# 🍌 Nano Banana Studio 사용 안내
+# 🎮 Gen AI Playground 사용 안내
 
 안녕하세요!
 
-Nano Banana Studio가 배포되었습니다.
+Gen AI Playground가 배포되었습니다.
 
 ## 🔗 접속 주소
-https://nano-banana-studio-xxxx.vercel.app
+https://gen-ai-playground-xxxx.vercel.app
 
 ## 📝 시작하기
 

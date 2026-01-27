@@ -40,7 +40,7 @@ export const OnboardingGuide = () => {
             </div>
             <div>
               <h2 className="text-xl font-bold text-slate-100">
-                Nano Banana Studio에 오신 것을 환영합니다! 🍌
+                Gen AI Playground에 오신 것을 환영합니다! 🎮
               </h2>
               <p className="text-sm text-slate-400">
                 AI 기반 이미지 & 비디오 생성 워크플로우 빌더

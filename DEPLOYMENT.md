@@ -1,4 +1,4 @@
-# 🚀 Nano Banana Studio - 배포 가이드
+# 🚀 Gen AI Playground - 배포 가이드
 
 ## 📋 준비물
 - GitHub 계정
@@ -10,23 +10,23 @@
 
 ### 1단계: 배포
 ```bash
-cd /Users/lukemacbookpro/nano-banana-studio
+cd /Users/lukemacbookpro/gen-ai-playground
 npx vercel
 ```
 
 ### 2단계: 질문에 답변
 ```
-? Set up and deploy "nano-banana-studio"? [Y/n] → Y
+? Set up and deploy "gen-ai-playground"? [Y/n] → Y
 ? Which scope do you want to deploy to? → [Your Name]
 ? Link to existing project? [y/N] → N
-? What's your project's name? → nano-banana-studio
+? What's your project's name? → gen-ai-playground
 ? In which directory is your code located? → ./
 ? Want to override the settings? [y/N] → N
 ```
 
 ### 3단계: 완료!
 ```
-✅ Deployed to production: https://nano-banana-studio-xxxx.vercel.app
+✅ Deployed to production: https://gen-ai-playground-xxxx.vercel.app
 ```
 
 → 이 URL을 팀원들에게 공유!
@@ -37,14 +37,14 @@ npx vercel
 
 ### 1단계: GitHub 저장소 생성
 1. https://github.com/new 방문
-2. Repository name: `nano-banana-studio`
+2. Repository name: `gen-ai-playground`
 3. Private 선택
 4. Create repository
 
 ### 2단계: 코드 푸시
 ```bash
-cd /Users/lukemacbookpro/nano-banana-studio
-git remote add origin https://github.com/[YOUR_USERNAME]/nano-banana-studio.git
+cd /Users/lukemacbookpro/gen-ai-playground
+git remote add origin https://github.com/[YOUR_USERNAME]/gen-ai-playground.git
 git branch -M main
 git push -u origin main
 ```

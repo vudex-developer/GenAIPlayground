@@ -7,7 +7,7 @@ echo "🔄 실시간 Git 자동 저장 시작..."
 echo "⚠️  종료하려면 Ctrl+C를 누르세요"
 echo ""
 
-REPO_DIR="/Users/lukemacbookpro/nano-banana-studio"
+REPO_DIR="/Users/lukemacbookpro/gen-ai-playground"
 WATCH_DIRS="src server"
 INTERVAL=300  # 5분마다 체크
 

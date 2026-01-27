@@ -1,4 +1,4 @@
-# Nano Banana Studio - Proxy Server
+# Gen AI Playground - Proxy Server
 
 Kling AI API CORS 문제를 해결하기 위한 프록시 서버입니다.
 

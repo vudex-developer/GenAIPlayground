@@ -1,4 +1,4 @@
-# 🍌 Nano Banana Studio
+# 🎮 Gen AI Playground
 
 **AI 기반 이미지 & 비디오 생성 워크플로우 빌더**
 
@@ -14,8 +14,8 @@
 - 실시간 미리보기
 
 ### 🤖 **AI 통합**
-- **Nano Banana (Imagen 3)**: 고품질 이미지 생성
-- **Gemini Video (Veo)**: 텍스트/이미지에서 비디오 생성
+- **Gemini Imagen 3**: 고품질 이미지 생성
+- **Gemini Video (Veo 2)**: 텍스트/이미지에서 비디오 생성
 - **Kling Video**: 프로페셔널 비디오 생성
 
 ### ⏪ **Undo/Redo**
@@ -156,7 +156,7 @@ Kling AI API는 브라우저에서 직접 호출 시 CORS 에러가 발생합니
 
 ### ⚡ 가장 빠른 방법 (5분)
 ```bash
-cd /Users/lukemacbookpro/nano-banana-studio
+cd /Users/lukemacbookpro/gen-ai-playground
 npx vercel
 ```
 → URL이 생성되면 팀원들에게 공유!
@@ -200,7 +200,7 @@ ImageImport → MotionPrompt → Kling Video
 ## 📦 프로젝트 구조
 
 ```
-nano-banana-studio/
+gen-ai-playground/
 ├── src/
 │   ├── components/      # UI 컴포넌트
 │   │   ├── nodes/       # 노드 컴포넌트

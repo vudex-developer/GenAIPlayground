@@ -1,7 +1,7 @@
 {
-  "name": "nano-banana-studio-server",
+  "name": "gen-ai-playground-server",
   "version": "1.0.0",
-  "description": "Proxy server for Kling AI API",
+  "description": "Proxy server for Gen AI Playground (Kling AI API)",
   "main": "index.js",
   "type": "module",
   "scripts": {
