@@ -1,7 +1,7 @@
 export interface KlingGenerationSettings {
   duration: 5 | 10
   aspectRatio: '16:9' | '9:16' | '1:1'
-  model?: 'kling-v1' | 'kling-v1-pro' | 'kling-v2.1-pro' | 'kling-v2.5-pro'
+  model?: 'kling-v1-5' | 'kling-v1-6' | 'kling-v1-pro' | 'kling-v2-5' | 'kling-v2-6'
   endImageDataUrl?: string
   cameraControl?: {
     type: 'horizontal' | 'vertical' | 'pan' | 'tilt' | 'roll' | 'zoom'
@@ -28,12 +28,13 @@ export class KlingAPIClient {
 
   private getModelName(model: string): string {
     const modelMap: Record<string, string> = {
-      'kling-v1': 'kling-v1',
+      'kling-v1-5': 'kling-v1-5',
+      'kling-v1-6': 'kling-v1-6',
       'kling-v1-pro': 'kling-v1-pro',
-      'kling-v2.1-pro': 'kling-v2.1-pro',
-      'kling-v2.5-pro': 'kling-v2.5-pro',
+      'kling-v2-5': 'kling-v2-5',
+      'kling-v2-6': 'kling-v2-6',
     }
-    return modelMap[model] || 'kling-v1'
+    return modelMap[model] || 'kling-v1-6' // 기본값: v1.6
   }
 
   async generateVideo(

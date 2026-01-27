@@ -128,7 +128,12 @@ export class GeminiAPIClient {
       imageConfig.imageSize = imageSize
     }
 
-    const response = await fetch(
+    // ⏱️ 타임아웃 설정 (2분)
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('이미지 생성 시간 초과 (2분). 다시 시도해주세요.')), 120000)
+    })
+
+    const fetchPromise = fetch(
       `${BASE_URL}/models/${model}:generateContent?key=${this.apiKey}`,
       {
         method: 'POST',
@@ -148,6 +153,8 @@ export class GeminiAPIClient {
         signal: abortSignal,
       },
     )
+
+    const response = await Promise.race([fetchPromise, timeoutPromise])
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -228,13 +235,20 @@ export class GeminiAPIClient {
   }
 
   private async pollOperation(operationName: string, abortSignal?: AbortSignal): Promise<string> {
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+    const maxAttempts = 60 // 60 * 10초 = 10분
+    
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       // Check if aborted before waiting
       if (abortSignal?.aborted) {
         throw new Error('작업이 취소되었습니다.')
       }
       
-      await sleep(10000)
+      // 진행 상황 로그
+      const elapsedMinutes = Math.floor((attempt * 10) / 60)
+      const elapsedSeconds = (attempt * 10) % 60
+      console.log(`🎬 Gemini Video 진행 중... ${elapsedMinutes}분 ${elapsedSeconds}초 (${attempt + 1}/${maxAttempts})`)
+      
+      await sleep(10000) // 10초 대기
       
       // Check if aborted after waiting
       if (abortSignal?.aborted) {
@@ -244,21 +258,34 @@ export class GeminiAPIClient {
       const response = await fetch(`${BASE_URL}/${operationName}?key=${this.apiKey}`, {
         signal: abortSignal,
       })
+      
       if (!response.ok) {
         const errorText = await response.text()
+        console.error('❌ Veo 상태 확인 실패:', errorText)
         throw new Error(`Veo 상태 확인 실패: ${errorText}`)
       }
+      
       const result = await response.json()
+      
       if (result.done) {
         const uri =
           result?.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri
         if (!uri) {
+          console.error('❌ 비디오 URI 없음:', result)
           throw new Error('비디오 URI를 찾지 못했습니다.')
         }
+        console.log('✅ 비디오 생성 완료!')
         return uri
       }
+      
+      // 진행 상태가 있다면 로그
+      if (result.metadata) {
+        console.log('📊 상태:', result.metadata)
+      }
     }
-    throw new Error('Veo 비디오 생성이 제한 시간 내 완료되지 않았습니다.')
+    
+    console.error('⏱️ 타임아웃: 10분 초과')
+    throw new Error('Veo 비디오 생성이 10분을 초과했습니다. API 키를 확인하거나 나중에 다시 시도해주세요.')
   }
 
   private async downloadVideo(uri: string, abortSignal?: AbortSignal): Promise<string> {

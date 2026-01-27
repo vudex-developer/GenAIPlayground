@@ -1,18 +1,21 @@
 import { useState, useEffect } from 'react'
 import { ReactFlowProvider } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff, Shield } from 'lucide-react'
+import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff, Shield, Database } from 'lucide-react'
 import Canvas from './components/Canvas'
 import { OnboardingGuide } from './components/OnboardingGuide'
 import { useFlowStore } from './stores/flowStore'
 import { useNetworkStatus } from './hooks/useNetworkStatus'
+import { useImagePersistence } from './hooks/useImagePersistence'
 import { getStorageInfo, analyzeStorage, clearStorageByPattern } from './utils/storage'
 import { getAllBackups, restoreBackup, getBackupStats } from './utils/backup'
+import { getStorageStats as getIndexedDBStats } from './utils/indexedDB'
 import type { WorkflowEdge, WorkflowNode } from './types/nodes'
 import vudexLogo from './assets/vudex-logo.png'
 
 function App() {
   const saveWorkflow = useFlowStore((state) => state.saveWorkflow)
+  const loadWorkflow = useFlowStore((state) => state.loadWorkflow)
   const importWorkflow = useFlowStore((state) => state.importWorkflow)
   const exportWorkflow = useFlowStore((state) => state.exportWorkflow)
   const undo = useFlowStore((state) => state.undo)
@@ -28,39 +31,71 @@ function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBackups, setShowBackups] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
+  const [idbStats, setIdbStats] = useState({ images: 0, videos: 0, totalSizeMB: '0' })
   const isOnline = useNetworkStatus()
   
-  // 주기적 자동 저장 (30초마다)
-  useEffect(() => {
-    const autoSaveInterval = setInterval(() => {
-      saveWorkflow()
-      console.log('🔄 Auto-saved to localStorage')
-    }, 30000)
-    
-    return () => clearInterval(autoSaveInterval)
-  }, [saveWorkflow])
+  // 🗄️ IndexedDB 자동 이미지 저장/복원
+  useImagePersistence()
   
-  // 페이지 떠날 때 저장
+  // 📊 IndexedDB 통계 주기적 업데이트
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      saveWorkflow()
+    const updateIDBStats = async () => {
+      try {
+        const stats = await getIndexedDBStats()
+        setIdbStats(stats)
+      } catch (error) {
+        console.error('❌ IndexedDB 통계 로드 실패:', error)
+      }
     }
     
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [saveWorkflow])
-  
-  // nodes나 edges 변경 시 자동 저장 (debounced)
-  useEffect(() => {
-    const saveTimer = setTimeout(() => {
-      const saved = saveWorkflow()
-      if (saved) {
-        console.log('💾 Auto-saved (state changed)')
-      }
-    }, 3000) // 3초 후 저장 (debounce)
+    updateIDBStats()
+    const interval = setInterval(updateIDBStats, 10000) // 10초마다
     
-    return () => clearTimeout(saveTimer)
-  }, [nodes, edges, saveWorkflow])
+    return () => clearInterval(interval)
+  }, [])
+  
+  // 🔄 초기 로드: persist 미들웨어가 자동으로 복원하지만, 추가 안전장치
+  useEffect(() => {
+    console.log('🚀 App 마운트됨 - localStorage 확인...')
+    
+    // localStorage에 실제로 데이터가 있는지 확인
+    const stored = localStorage.getItem('nano-banana-workflow-v3')
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        console.log('📦 localStorage 데이터 발견:', {
+          hasNodes: !!parsed.state?.nodes,
+          nodeCount: parsed.state?.nodes?.length ?? 0,
+          hasEdges: !!parsed.state?.edges,
+          edgeCount: parsed.state?.edges?.length ?? 0,
+        })
+        
+        // persist 미들웨어가 자동으로 복원하므로, 여기서는 확인만 함
+        // 만약 persist가 실패했다면 수동으로 로드
+        setTimeout(() => {
+          const currentNodes = useFlowStore.getState().nodes
+          if (currentNodes.length === 0 && parsed.state?.nodes?.length > 0) {
+            console.warn('⚠️ persist 복원 실패 - 수동 로드 시도')
+            loadWorkflow()
+          }
+        }, 100)
+      } catch (error) {
+        console.error('❌ localStorage 파싱 실패:', error)
+      }
+    } else {
+      console.log('ℹ️ localStorage에 저장된 데이터 없음 (새 시작)')
+    }
+  }, [loadWorkflow]) // loadWorkflow만 의존성으로
+  
+  // 🔄 persist 미들웨어가 자동으로 저장하므로, 백업만 주기적으로 생성
+  useEffect(() => {
+    const backupInterval = setInterval(() => {
+      saveWorkflow() // 백업 생성 (5분마다 한 번씩만 실제 생성)
+      console.log('🔄 백업 체크 완료')
+    }, 60000) // 1분마다 체크 (실제 백업은 5분마다)
+    
+    return () => clearInterval(backupInterval)
+  }, [saveWorkflow])
 
   // Keyboard shortcuts for Undo/Redo
   useEffect(() => {
@@ -391,7 +426,28 @@ function App() {
       {showSettings ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md space-y-4 rounded-xl bg-[#111821] p-5 shadow-lg">
-            {/* 저장공간 정보 */}
+            {/* IndexedDB 저장공간 정보 */}
+            <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Database className="h-4 w-4 text-blue-400" />
+                  <div className="text-xs font-semibold text-slate-100">
+                    IndexedDB (이미지/비디오)
+                  </div>
+                </div>
+                <div className="text-xs font-bold text-blue-400">
+                  {idbStats.totalSizeMB} MB
+                </div>
+              </div>
+              <div className="text-[10px] text-slate-400">
+                📸 이미지: {idbStats.images}개 | 🎬 비디오: {idbStats.videos}개
+              </div>
+              <div className="mt-2 text-[10px] text-blue-300">
+                ✨ 대용량 미디어는 IndexedDB에 자동 저장됩니다
+              </div>
+            </div>
+
+            {/* localStorage 저장공간 정보 */}
             {(() => {
               const storageInfo = getStorageInfo()
               const isWarning = storageInfo.percentage > 70

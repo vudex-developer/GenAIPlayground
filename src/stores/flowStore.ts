@@ -341,6 +341,38 @@ const saveToHistory = (get: () => FlowState, set: (state: Partial<FlowState>) =>
   })
 }
 
+// ⚡ Throttled localStorage for better performance
+const createThrottledStorage = () => {
+  let saveTimeout: NodeJS.Timeout | null = null
+  const SAVE_DELAY = 1000 // 1초 throttle
+
+  return {
+    getItem: (name: string) => {
+      const value = localStorage.getItem(name)
+      return value ? JSON.parse(value) : null
+    },
+    setItem: (name: string, value: any) => {
+      // Throttle: 1초 동안 여러 번 호출되면 마지막 것만 저장
+      if (saveTimeout) {
+        clearTimeout(saveTimeout)
+      }
+      
+      saveTimeout = setTimeout(() => {
+        try {
+          const serialized = JSON.stringify(value)
+          localStorage.setItem(name, serialized)
+          console.log('💾 Throttled save completed')
+        } catch (error) {
+          console.error('❌ Save failed:', error)
+        }
+      }, SAVE_DELAY)
+    },
+    removeItem: (name: string) => {
+      localStorage.removeItem(name)
+    },
+  }
+}
+
 export const useFlowStore = create<FlowState>()(
   persist(
     (set, get) => ({
@@ -360,12 +392,22 @@ export const useFlowStore = create<FlowState>()(
       closeImageModal: () => set({ imageModal: { isOpen: false, imageUrl: null } }),
   onNodesChange: (changes) => {
     try {
+      // 🎯 성능 최적화: position 변경만 있으면 로그 생략
+      const hasNonPositionChange = changes.some(
+        change => change.type !== 'position' && change.type !== 'dimensions'
+      )
+      
+      if (hasNonPositionChange) {
+        console.log('🔄 onNodesChange:', changes)
+      }
+      
       // Clean up abort controllers for removed nodes
       const removedNodeIds = changes
         .filter(change => change.type === 'remove')
         .map(change => (change as any).id)
       
       if (removedNodeIds.length > 0) {
+        console.log('🗑️ 노드 삭제 시도:', removedNodeIds)
         const { abortControllers } = get()
         removedNodeIds.forEach(id => {
           const controller = abortControllers.get(id)
@@ -382,6 +424,7 @@ export const useFlowStore = create<FlowState>()(
       
       const currentNodes = get().nodes
       const currentEdges = get().edges
+      
       const newNodes = applyNodeChanges(changes, currentNodes) as WorkflowNode[]
       const newEdges = normalizeEdges(currentEdges, newNodes)
       
@@ -390,7 +433,7 @@ export const useFlowStore = create<FlowState>()(
         edges: newEdges
       })
       
-      // Save to history for add/remove changes (not for select/drag)
+      // ⚡ 성능 최적화: add/remove만 history 저장 (position/select는 제외)
       const shouldSaveHistory = changes.some(change => 
         change.type === 'add' || change.type === 'remove'
       )
@@ -398,8 +441,8 @@ export const useFlowStore = create<FlowState>()(
         saveToHistory(get, set)
       }
     } catch (error) {
-      console.error('Error in onNodesChange:', error)
-      // Don't crash the app, just log the error
+      console.error('❌ Error in onNodesChange:', error)
+      // 에러 발생해도 앱이 멈추지 않도록
     }
   },
   onEdgesChange: (changes) => {
@@ -465,28 +508,21 @@ export const useFlowStore = create<FlowState>()(
   },
   saveWorkflow: () => {
     try {
-      // 📊 저장 전에 저장공간 체크
-      const storageInfo = getStorageInfo()
-      console.log(`💾 Storage usage: ${storageInfo.usedMB} MB / ${storageInfo.limitMB} MB (${storageInfo.percentage.toFixed(1)}%)`)
+      // 📊 persist 미들웨어가 자동으로 저장하므로, 여기서는 백업만 생성
+      console.log('💾 백업 생성 중...')
       
-      // ⚠️ 저장공간 경고
+      // 저장공간 체크
+      const storageInfo = getStorageInfo()
+      console.log(`📊 Storage: ${storageInfo.usedMB} MB / ${storageInfo.limitMB} MB (${storageInfo.percentage.toFixed(1)}%)`)
+      
       const warning = getStorageWarning(storageInfo)
       if (warning) {
         console.warn(warning)
       }
       
-      // 🧹 필요시 자동 정리
-      const nodesToSave = prepareForStorage(get().nodes, storageInfo.isCritical)
-      
-      const payload = JSON.stringify({
-        nodes: sanitizeNodesForStorage(nodesToSave),
-        edges: get().edges,
-      })
-      
-      // localStorage에 저장 시도
-      try {
-        localStorage.setItem(STORAGE_KEY, payload)
-        
+      // persist가 저장한 데이터 가져오기
+      const persistedData = localStorage.getItem('nano-banana-workflow-v3')
+      if (persistedData) {
         // 🔒 자동 백업 생성 (5분마다 한 번씩만)
         const lastBackupKey = 'last-backup-time'
         const lastBackup = parseInt(localStorage.getItem(lastBackupKey) || '0')
@@ -494,59 +530,67 @@ export const useFlowStore = create<FlowState>()(
         const fiveMinutes = 5 * 60 * 1000
         
         if (now - lastBackup > fiveMinutes) {
-          createBackup(payload)
+          // persist 형식 그대로 백업
+          createBackup(persistedData)
           localStorage.setItem(lastBackupKey, now.toString())
+          console.log('✅ 백업 생성 완료')
+        } else {
+          console.log('⏭️ 백업 생성 건너뜀 (5분 이내)')
         }
-        
-        // ✅ 저장 성공 후 저장공간 재확인
-        const newStorageInfo = getStorageInfo()
-        console.log(`✅ Saved! New storage: ${newStorageInfo.usedMB} MB (${newStorageInfo.percentage.toFixed(1)}%)`)
-        
-        return true
-      } catch (storageError: any) {
-        // 용량 초과 시 긴급 정리 후 재시도
-        if (storageError.name === 'QuotaExceededError') {
-          console.warn('⚠️ localStorage quota exceeded. Attempting emergency cleanup...')
-          
-          // 긴급 정리: 모든 이미지 DataUrl 제거
-          const emergencyNodes = prepareForStorage(get().nodes, true)
-          const emergencyPayload = JSON.stringify({
-            nodes: sanitizeNodesForStorage(emergencyNodes),
-            edges: get().edges,
-          })
-          
-          try {
-            localStorage.setItem(STORAGE_KEY, emergencyPayload)
-            console.log('✅ Saved after emergency cleanup')
-            alert('⚠️ 저장공간이 부족하여 일부 이미지 데이터가 제거되었습니다.\n\n이미지 URL은 유지되지만, 오프라인에서는 표시되지 않을 수 있습니다.\n\n"Export" 버튼으로 워크플로우를 백업하는 것을 권장합니다.')
-            return true
-          } catch (finalError) {
-            console.error('❌ Save failed even after emergency cleanup')
-            alert('⛔ 저장 공간이 부족합니다!\n\n해결 방법:\n1. "Export" 버튼으로 워크플로우를 파일로 백업하세요.\n2. 일부 노드를 삭제하여 용량을 줄이세요.\n3. 브라우저 개발자 도구(F12) > Application > Storage > Local Storage에서 데이터를 정리하세요.')
-            return false
-          }
-        }
-        return false
       }
+      
+      // persist가 자동으로 저장하므로 항상 성공 반환
+      return true
     } catch (error) {
-      console.error('Save workflow failed:', error)
+      console.error('❌ 백업 생성 실패:', error)
       return false
     }
   },
   loadWorkflow: () => {
     try {
+      console.log('🔄 loadWorkflow 호출됨')
       const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return false
-      const parsed = JSON.parse(raw) as { nodes?: WorkflowNode[]; edges?: WorkflowEdge[] }
-      const nodes = Array.isArray(parsed.nodes) ? parsed.nodes : []
-      const edges = Array.isArray(parsed.edges) ? parsed.edges : []
+      if (!raw) {
+        console.log('ℹ️ localStorage에 데이터 없음')
+        return false
+      }
+      
+      const parsed = JSON.parse(raw)
+      console.log('📦 localStorage 데이터 파싱 성공:', parsed)
+      
+      // persist 형식 확인: { state: {...}, version: 0 }
+      let nodes: WorkflowNode[] = []
+      let edges: WorkflowEdge[] = []
+      
+      if (parsed.state) {
+        // persist 미들웨어 형식
+        console.log('✅ persist 형식 감지')
+        nodes = Array.isArray(parsed.state.nodes) ? parsed.state.nodes : []
+        edges = Array.isArray(parsed.state.edges) ? parsed.state.edges : []
+      } else if (parsed.nodes) {
+        // 구버전 또는 export 형식
+        console.log('ℹ️ 구버전 형식 감지')
+        nodes = Array.isArray(parsed.nodes) ? parsed.nodes : []
+        edges = Array.isArray(parsed.edges) ? parsed.edges : []
+      }
+      
+      console.log('📊 로드된 데이터:', { nodeCount: nodes.length, edgeCount: edges.length })
+      
+      if (nodes.length === 0) {
+        console.log('⚠️ 노드가 없음')
+        return false
+      }
+      
       set({
         nodes,
         edges: normalizeEdges(edges, nodes),
         selectedNodeId: null,
       })
+      
+      console.log('✅ 워크플로우 복원 완료')
       return true
-    } catch {
+    } catch (error) {
+      console.error('❌ loadWorkflow 실패:', error)
       return false
     }
   },
@@ -836,6 +880,17 @@ export const useFlowStore = create<FlowState>()(
       return
     }
 
+    const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
+    
+    if (!apiKey) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Gemini API Key가 필요합니다. 상단 "API Key" 버튼을 눌러서 설정하세요.',
+      }))
+      return
+    }
+
     updateNode((prev) => ({
       ...prev,
       status: 'processing',
@@ -843,8 +898,7 @@ export const useFlowStore = create<FlowState>()(
       lastExecutionTime: now,
     }))
 
-    const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
-    const client = apiKey ? new GeminiAPIClient(apiKey) : new MockGeminiAPI()
+    const client = new GeminiAPIClient(apiKey)
 
     try {
       // Check if aborted before starting
@@ -934,6 +988,15 @@ export const useFlowStore = create<FlowState>()(
       console.warn('⚠️ Gemini node is already processing')
       return
     }
+    
+    // 🧹 이전 에러 먼저 지우기
+    set({
+      nodes: get().nodes.map((node) =>
+        node.id === id
+          ? { ...node, data: { ...node.data, error: undefined } }
+          : node
+      ),
+    })
 
     // ✅ Rate limiting
     const now = Date.now()
@@ -1019,6 +1082,17 @@ export const useFlowStore = create<FlowState>()(
       return
     }
 
+    const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
+    
+    if (!apiKey) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Gemini API Key가 필요합니다. 상단 "API Key" 버튼을 눌러서 설정하세요.',
+      }))
+      return
+    }
+
     updateNode((prev) => ({
       ...prev,
       status: 'processing',
@@ -1030,8 +1104,7 @@ export const useFlowStore = create<FlowState>()(
       lastExecutionTime: now,
     }))
 
-    const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
-    const client = apiKey ? new GeminiAPIClient(apiKey) : new MockGeminiAPI()
+    const client = new GeminiAPIClient(apiKey)
 
     const progressTimer = setInterval(() => {
       updateNode((prev) => {
@@ -1842,20 +1915,49 @@ export const useFlowStore = create<FlowState>()(
     }),
     {
       name: 'nano-banana-workflow-v3',
-      partialize: (state) => ({
-        nodes: sanitizeNodesForStorage(state.nodes),
-        edges: sanitizeEdgesForStorage(state.edges),
-        apiKey: state.apiKey,
-        klingApiKey: state.klingApiKey,
-      }),
-      onRehydrateStorage: () => (state) => {
-        if (state) {
-          try {
-            state.edges = normalizeEdges(state.edges, state.nodes)
-          } catch (error) {
-            console.error('Error normalizing edges on rehydrate:', error)
-            // Reset to safe state if normalization fails
-            state.edges = []
+      storage: createThrottledStorage(), // ⚡ Throttled storage
+      partialize: (state) => {
+        // 🔥 저장 전 자동 용량 관리
+        const storageInfo = getStorageInfo()
+        console.log(`💾 Persist: ${storageInfo.usedMB} MB / ${storageInfo.limitMB} MB (${storageInfo.percentage.toFixed(1)}%)`)
+        
+        // 90% 이상이면 긴급 정리
+        const shouldCleanup = storageInfo.percentage > 90
+        const nodesToSave = shouldCleanup 
+          ? prepareForStorage(state.nodes, true) // 긴급 정리
+          : prepareForStorage(state.nodes, false) // 일반 정리
+        
+        if (shouldCleanup) {
+          console.warn('⚠️ localStorage 90% 초과! 긴급 정리 실행')
+        }
+        
+        return {
+          nodes: sanitizeNodesForStorage(nodesToSave),
+          edges: sanitizeEdgesForStorage(state.edges),
+          apiKey: state.apiKey,
+          klingApiKey: state.klingApiKey,
+        }
+      },
+      onRehydrateStorage: () => {
+        console.log('🔄 Zustand persist: 복원 시작...')
+        return (state) => {
+          if (state) {
+            console.log('✅ Zustand persist: 상태 복원됨', {
+              nodeCount: state.nodes?.length ?? 0,
+              edgeCount: state.edges?.length ?? 0,
+              hasApiKey: !!state.apiKey,
+              hasKlingApiKey: !!state.klingApiKey,
+            })
+            try {
+              state.edges = normalizeEdges(state.edges, state.nodes)
+              console.log('✅ Edges 정규화 완료')
+            } catch (error) {
+              console.error('❌ Error normalizing edges on rehydrate:', error)
+              // Reset to safe state if normalization fails
+              state.edges = []
+            }
+          } else {
+            console.log('ℹ️ Zustand persist: 복원할 상태 없음 (새 시작)')
           }
         }
       },

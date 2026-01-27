@@ -236,6 +236,20 @@ export default function Canvas() {
           panOnDrag={[1, 2]}
           multiSelectionKeyCode="Shift"
           fitView
+          // ⚡ 성능 최적화
+          nodesDraggable={true}
+          nodesConnectable={true}
+          elementsSelectable={true}
+          selectNodesOnDrag={false}
+          zoomOnScroll={true}
+          zoomOnPinch={true}
+          panOnScroll={false}
+          preventScrolling={true}
+          minZoom={0.1}
+          maxZoom={4}
+          // 렌더링 최적화
+          nodeOrigin={[0.5, 0]}
+          elevateNodesOnSelect={false}
         >
           <Background gap={22} color="#121a24" />
           <MiniMap 

@@ -78,10 +78,11 @@ export type GeminiVideoNodeData = {
 }
 
 export type KlingVideoModel = 
-  | 'kling-v1' 
+  | 'kling-v1-5'
+  | 'kling-v1-6'
   | 'kling-v1-pro' 
-  | 'kling-v2.1-pro' 
-  | 'kling-v2.5-pro'
+  | 'kling-v2-5'
+  | 'kling-v2-6'
 
 export type KlingCameraControl = 
   | 'none'
@@ -235,7 +236,7 @@ export const createNodeData = (type: NodeType): NodeData => {
     case 'klingVideo':
       return {
         status: 'idle',
-        model: 'kling-v1',
+        model: 'kling-v1-6',  // 최신 안정 버전
         duration: 5,
         aspectRatio: '16:9',
         enableMotionControl: false,

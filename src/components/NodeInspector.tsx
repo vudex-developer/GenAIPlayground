@@ -793,13 +793,15 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
   }
 
   const modelHint =
-    data.model === 'kling-v1'
-      ? 'Standard quality'
-      : data.model === 'kling-v1-pro'
-        ? 'Pro quality'
-        : data.model === 'kling-v2.1-pro'
-          ? 'v2.1 Pro · Enhanced'
-          : 'v2.5 Pro · Latest'
+    data.model === 'kling-v1-5'
+      ? 'v1.5 · Stable'
+      : data.model === 'kling-v1-6'
+        ? 'v1.6 · Recommended'
+        : data.model === 'kling-v1-pro'
+          ? 'v1 Pro · Enhanced quality'
+          : data.model === 'kling-v2-5'
+            ? 'v2.5 · Advanced'
+            : 'v2.6 · Latest flagship'
 
   return (
     <div className="space-y-4">
@@ -810,10 +812,11 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
           onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
-          <option value="kling-v1">Kling 1.0</option>
+          <option value="kling-v1-5">Kling 1.5</option>
+          <option value="kling-v1-6">Kling 1.6 (Recommended)</option>
           <option value="kling-v1-pro">Kling 1.0 Pro</option>
-          <option value="kling-v2.1-pro">Kling 2.1 Pro</option>
-          <option value="kling-v2.5-pro">Kling 2.5 Pro</option>
+          <option value="kling-v2-5">Kling 2.5</option>
+          <option value="kling-v2-6">Kling 2.6 (Latest)</option>
         </select>
         <div className="mt-1 text-xs text-slate-500">{modelHint}</div>
       </div>
