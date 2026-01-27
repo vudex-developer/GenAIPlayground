@@ -32,6 +32,7 @@ function App() {
   const [showBackups, setShowBackups] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
   const [idbStats, setIdbStats] = useState({ images: 0, videos: 0, totalSizeMB: '0' })
+  const [s3Config, setS3Config] = useState({ available: false, region: '', bucket: '' })
   const isOnline = useNetworkStatus()
   
   // 🗄️ IndexedDB 자동 이미지 저장/복원
@@ -52,6 +53,80 @@ function App() {
     const interval = setInterval(updateIDBStats, 10000) // 10초마다
     
     return () => clearInterval(interval)
+  }, [])
+  
+  // ☁️ S3 설정 확인
+  useEffect(() => {
+    const checkS3Config = async () => {
+      try {
+        const { getS3Config } = await import('./utils/s3Client')
+        const config = getS3Config()
+        setS3Config(config)
+      } catch (error) {
+        console.error('❌ S3 설정 확인 실패:', error)
+      }
+    }
+    
+    checkS3Config()
+  }, [])
+  
+  // 🧹 자동 정리 스케줄러 (매일 1회)
+  useEffect(() => {
+    const runCleanup = async () => {
+      console.log('🧹 자동 정리 스케줄러 시작...')
+      
+      // 마지막 정리 시간 확인
+      const lastCleanup = localStorage.getItem('last-cleanup-time')
+      const now = Date.now()
+      const dayInMs = 24 * 60 * 60 * 1000
+      
+      if (!lastCleanup || now - parseInt(lastCleanup) > dayInMs) {
+        try {
+          // IndexedDB 오래된 미디어 정리 (30일 이상)
+          const { cleanupOldMedia } = await import('./utils/indexedDB')
+          const cleaned = await cleanupOldMedia(30)
+          
+          if (cleaned > 0) {
+            console.log(`✅ 오래된 미디어 ${cleaned}개 자동 정리됨`)
+          }
+          
+          // localStorage 백업 정리 (7일 이상 오래된 백업만 유지)
+          const backups = getAllBackups()
+          const sevenDaysAgo = now - 7 * dayInMs
+          let deletedBackups = 0
+          
+          backups.forEach(backup => {
+            if (backup.timestamp < sevenDaysAgo) {
+              localStorage.removeItem(backup.key)
+              deletedBackups++
+            }
+          })
+          
+          if (deletedBackups > 0) {
+            console.log(`✅ 오래된 백업 ${deletedBackups}개 삭제됨`)
+          }
+          
+          // 정리 시간 기록
+          localStorage.setItem('last-cleanup-time', now.toString())
+          console.log('✅ 자동 정리 완료')
+        } catch (error) {
+          console.error('❌ 자동 정리 실패:', error)
+        }
+      } else {
+        console.log('ℹ️ 자동 정리 스킵 (24시간 미경과)')
+      }
+    }
+    
+    // 앱 시작 5초 후 첫 정리 체크
+    const initTimeout = setTimeout(runCleanup, 5000)
+    
+    // 이후 매 시간마다 체크 (24시간 지났는지 확인)
+    const interval = setInterval(runCleanup, 60 * 60 * 1000) // 1시간마다
+    
+    return () => {
+      clearTimeout(initTimeout)
+      clearInterval(interval)
+    }
   }, [])
   
   // 🔄 초기 로드: persist 미들웨어가 자동으로 복원하지만, 추가 안전장치
@@ -426,26 +501,105 @@ function App() {
       {showSettings ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md space-y-4 rounded-xl bg-[#111821] p-5 shadow-lg">
-            {/* IndexedDB 저장공간 정보 */}
-            <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Database className="h-4 w-4 text-blue-400" />
-                  <div className="text-xs font-semibold text-slate-100">
-                    IndexedDB (이미지/비디오)
+            {/* 워크플로우 통계 */}
+            {(() => {
+              const nodeCount = nodes.length
+              const edgeCount = edges.length
+              const isWarning = nodeCount > 50
+              const isCritical = nodeCount > 100
+              
+              return (
+                <div className={`rounded-lg border px-4 py-3 ${
+                  isCritical ? 'border-red-500/30 bg-red-500/5' :
+                  isWarning ? 'border-yellow-500/30 bg-yellow-500/5' :
+                  'border-emerald-500/20 bg-emerald-500/5'
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-slate-100">
+                      📊 워크플로우 통계
+                    </div>
+                    <div className={`text-xs font-bold ${
+                      isCritical ? 'text-red-400' :
+                      isWarning ? 'text-yellow-400' :
+                      'text-emerald-400'
+                    }`}>
+                      {nodeCount}개 노드
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    🔗 연결: {edgeCount}개
+                  </div>
+                  {isCritical && (
+                    <div className="mt-2 text-[10px] text-red-400">
+                      ⚠️ 노드가 너무 많습니다! (100개 초과)<br/>
+                      워크플로우를 분리하거나 Export로 백업 후 정리하세요.
+                    </div>
+                  )}
+                  {isWarning && !isCritical && (
+                    <div className="mt-2 text-[10px] text-yellow-400">
+                      💡 노드가 많습니다 (50개 초과)<br/>
+                      성능을 위해 사용하지 않는 노드를 삭제하세요.
+                    </div>
+                  )}
+                  {!isWarning && (
+                    <div className="mt-2 text-[10px] text-emerald-300">
+                      ✅ 최적의 노드 개수입니다
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* AWS S3 저장공간 정보 */}
+            {s3Config.available ? (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Database className="h-4 w-4 text-emerald-400" />
+                    <div className="text-xs font-semibold text-slate-100">
+                      AWS S3 (클라우드)
+                    </div>
+                  </div>
+                  <div className="text-xs font-bold text-emerald-400">
+                    ✅ 활성화
                   </div>
                 </div>
-                <div className="text-xs font-bold text-blue-400">
-                  {idbStats.totalSizeMB} MB
+                <div className="text-[10px] text-slate-400">
+                  🌎 Region: {s3Config.region} | 📦 Bucket: {s3Config.bucket}
+                </div>
+                <div className="mt-2 text-[10px] text-emerald-300">
+                  ☁️ 모든 미디어가 AWS S3에 자동 업로드됩니다
+                </div>
+                <div className="mt-1 text-[10px] text-slate-400">
+                  💾 IndexedDB는 오프라인 캐시로 사용됩니다
                 </div>
               </div>
-              <div className="text-[10px] text-slate-400">
-                📸 이미지: {idbStats.images}개 | 🎬 비디오: {idbStats.videos}개
+            ) : (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Database className="h-4 w-4 text-blue-400" />
+                    <div className="text-xs font-semibold text-slate-100">
+                      IndexedDB (브라우저)
+                    </div>
+                  </div>
+                  <div className="text-xs font-bold text-blue-400">
+                    {idbStats.totalSizeMB} MB
+                  </div>
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  📸 이미지: {idbStats.images}개 | 🎬 비디오: {idbStats.videos}개
+                </div>
+                <div className="mt-2 text-[10px] text-blue-300">
+                  💡 AWS 설정을 추가하면 무제한 클라우드 저장소를 사용할 수 있습니다
+                </div>
+                {idbStats.images + idbStats.videos > 50 && (
+                  <div className="mt-2 text-[10px] text-yellow-400">
+                    ⚠️ 오래된 미디어는 30일 후 자동 삭제됩니다
+                  </div>
+                )}
               </div>
-              <div className="mt-2 text-[10px] text-blue-300">
-                ✨ 대용량 미디어는 IndexedDB에 자동 저장됩니다
-              </div>
-            </div>
+            )}
 
             {/* localStorage 저장공간 정보 */}
             {(() => {

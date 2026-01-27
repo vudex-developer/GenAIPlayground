@@ -15,28 +15,35 @@ async function migrateNodeImages(node: WorkflowNode): Promise<boolean> {
   let updated = false
   const data = node.data as any
 
-  // 처리할 이미지 필드들
+  // 처리할 이미지 필드들 (모든 가능한 이미지 필드)
   const imageFields = [
     'imageDataUrl',
+    'imageUrl',
     'outputImageDataUrl',
+    'outputImageUrl',
     'composedImageDataUrl',
+    'composedImageUrl',
     'referenceImageDataUrl',
+    'inputImageDataUrl',
+    'inputImageUrl',
+    'endImageDataUrl',
+    'endImageUrl',
   ]
 
   for (const field of imageFields) {
     const value = data[field]
     
     // DataURL이고 아직 IndexedDB에 저장 안 됨
-    if (value && typeof value === 'string' && value.startsWith('data:') && !value.startsWith('idb:')) {
+    if (value && typeof value === 'string' && value.startsWith('data:')) {
       try {
         const id = `${node.id}-${field}-${Date.now()}`
         const idbRef = await saveImage(id, value, node.id)
         
-        // 노드 데이터 업데이트
+        // 노드 데이터 업데이트 - idb: 참조 저장
         data[field] = idbRef
         updated = true
         
-        console.log(`✅ 이미지 마이그레이션: ${node.id}.${field} → ${idbRef}`)
+        console.log(`✅ 마이그레이션: ${node.id}.${field} → IndexedDB`)
       } catch (error) {
         console.error(`❌ 이미지 저장 실패: ${node.id}.${field}`, error)
       }
@@ -80,9 +87,16 @@ async function restoreNodeImages(node: WorkflowNode): Promise<boolean> {
   // 처리할 이미지 필드들
   const imageFields = [
     'imageDataUrl',
+    'imageUrl',
     'outputImageDataUrl',
+    'outputImageUrl',
     'composedImageDataUrl',
+    'composedImageUrl',
     'referenceImageDataUrl',
+    'inputImageDataUrl',
+    'inputImageUrl',
+    'endImageDataUrl',
+    'endImageUrl',
   ]
 
   for (const field of imageFields) {
@@ -94,14 +108,8 @@ async function restoreNodeImages(node: WorkflowNode): Promise<boolean> {
         const dataURL = await getImage(value)
         if (dataURL) {
           data[field] = dataURL
-          
-          // URL 필드도 업데이트
-          const urlField = field.replace('DataUrl', 'Url')
-          if (urlField !== field) {
-            data[urlField] = dataURL
-          }
-          
           updated = true
+          console.log(`✅ 복원: ${node.id}.${field}`)
         }
       } catch (error) {
         console.error(`❌ 이미지 복원 실패: ${node.id}.${field}`, error)

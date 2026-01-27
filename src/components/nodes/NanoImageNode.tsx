@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
 import { Banana, Loader2 } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
+import { getImage } from '../../utils/indexedDB'
 import type { NanoImageNodeData } from '../../types/nodes'
 
 export default function NanoImageNode({
@@ -9,7 +11,47 @@ export default function NanoImageNode({
   selected,
 }: NodeProps<NanoImageNodeData>) {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
+  const updateNodeData = useFlowStore((state) => state.updateNodeData)
   const openImageModal = useFlowStore((state) => state.openImageModal)
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | undefined>(
+    data.outputImageUrl
+  )
+
+  // 🔄 IndexedDB/S3에서 이미지 복원
+  useEffect(() => {
+    const loadImage = async () => {
+      if (!data.outputImageUrl) {
+        setDisplayImageUrl(undefined)
+        return
+      }
+
+      // idb: 또는 s3: 참조인 경우
+      if (
+        typeof data.outputImageUrl === 'string' &&
+        (data.outputImageUrl.startsWith('idb:') || data.outputImageUrl.startsWith('s3:'))
+      ) {
+        try {
+          console.log(`🔄 이미지 로드 시도: ${data.outputImageUrl}`)
+          const dataURL = await getImage(data.outputImageUrl)
+          if (dataURL) {
+            console.log(`✅ 이미지 로드 성공`)
+            setDisplayImageUrl(dataURL)
+          } else {
+            console.warn(`⚠️ 이미지 로드 실패: ${data.outputImageUrl}`)
+            setDisplayImageUrl(undefined)
+          }
+        } catch (error) {
+          console.error('❌ 이미지 복원 실패:', error)
+          setDisplayImageUrl(undefined)
+        }
+      } else {
+        // 일반 DataURL 또는 HTTP URL
+        setDisplayImageUrl(data.outputImageUrl)
+      }
+    }
+
+    loadImage()
+  }, [data.outputImageUrl, id, updateNodeData])
 
   return (
     <div 
@@ -26,15 +68,19 @@ export default function NanoImageNode({
       </div>
 
       <div className="p-3">
-        {data.outputImageUrl ? (
+        {displayImageUrl ? (
           <div className="relative">
             <img
-              src={data.outputImageUrl}
+              src={displayImageUrl}
               alt="Generated"
               className="w-full rounded-md cursor-pointer hover:opacity-80 transition"
               onDoubleClick={(e) => {
                 e.stopPropagation()
-                openImageModal(data.outputImageUrl || '')
+                openImageModal(displayImageUrl || '')
+              }}
+              onError={(e) => {
+                console.error('❌ 이미지 로드 에러:', displayImageUrl)
+                setDisplayImageUrl(undefined)
               }}
               title="더블클릭하여 크게 보기"
             />

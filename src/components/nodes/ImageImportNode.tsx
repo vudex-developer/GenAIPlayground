@@ -1,7 +1,8 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
 import { Image as ImageIcon, Upload } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
+import { getImage } from '../../utils/indexedDB'
 import type { ImageImportNodeData } from '../../types/nodes'
 
 export default function ImageImportNode({
@@ -13,6 +14,35 @@ export default function ImageImportNode({
   const updateNodeData = useFlowStore((state) => state.updateNodeData)
   const openImageModal = useFlowStore((state) => state.openImageModal)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | undefined>(
+    data.imageDataUrl || data.imageUrl
+  )
+
+  // 🔄 IndexedDB에서 이미지 복원
+  useEffect(() => {
+    const loadImage = async () => {
+      // imageDataUrl이 idb: 참조인 경우
+      if (data.imageDataUrl && typeof data.imageDataUrl === 'string' && data.imageDataUrl.startsWith('idb:')) {
+        try {
+          const dataURL = await getImage(data.imageDataUrl)
+          if (dataURL) {
+            setDisplayImageUrl(dataURL)
+            // 실제 DataURL로 업데이트 (선택적)
+            updateNodeData(id, { 
+              imageDataUrl: dataURL,
+              imageUrl: dataURL 
+            })
+          }
+        } catch (error) {
+          console.error('❌ 이미지 복원 실패:', error)
+        }
+      } else if (data.imageDataUrl || data.imageUrl) {
+        setDisplayImageUrl(data.imageDataUrl || data.imageUrl)
+      }
+    }
+
+    loadImage()
+  }, [data.imageDataUrl, data.imageUrl, id, updateNodeData])
 
   const handleFileUpload = async (file: File) => {
     if (!file.type.startsWith('image/')) return
@@ -63,10 +93,10 @@ export default function ImageImportNode({
           }}
           onClick={(e) => e.stopPropagation()}
         />
-        {data.imageDataUrl || data.imageUrl ? (
+        {displayImageUrl ? (
           <div className="relative">
             <img
-              src={data.imageDataUrl || data.imageUrl}
+              src={displayImageUrl}
               alt="Imported"
               className="w-full rounded-md cursor-pointer hover:opacity-80 transition"
               onClick={(e) => {
@@ -75,11 +105,22 @@ export default function ImageImportNode({
               }}
               onDoubleClick={(e) => {
                 e.stopPropagation()
-                openImageModal(data.imageDataUrl || data.imageUrl || '')
+                openImageModal(displayImageUrl || '')
               }}
               onError={() => {
-                // 이미지 로드 실패 시 imageUrl 제거
-                updateNodeData(id, { imageUrl: undefined })
+                // 이미지 로드 실패 시 재로드 시도
+                console.warn('⚠️ 이미지 로드 실패, IndexedDB에서 재시도...')
+                if (data.imageDataUrl?.startsWith('idb:')) {
+                  getImage(data.imageDataUrl).then((dataURL) => {
+                    if (dataURL) {
+                      setDisplayImageUrl(dataURL)
+                    } else {
+                      setDisplayImageUrl(undefined)
+                    }
+                  })
+                } else {
+                  setDisplayImageUrl(undefined)
+                }
               }}
               title="더블클릭하여 크게 보기"
             />

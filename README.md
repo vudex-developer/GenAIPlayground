@@ -227,6 +227,53 @@ git push
 
 ---
 
+## ⚡ 성능 최적화
+
+### 📊 저장소 구조
+
+앱은 세 가지 저장소를 지원합니다:
+
+- **localStorage (5MB)**: 워크플로우 구조, API 키, 백업
+- **IndexedDB (수백 MB)**: 이미지, 비디오 (자동 압축) - 기본
+- **AWS S3 (무제한)**: 클라우드 저장소 (선택 사항) - [설정 가이드](./AWS-SETUP.md)
+
+### 🤖 자동 최적화 (이미 작동 중!)
+
+✅ **이미지 자동 압축** (2048px 이상 → 자동 리사이즈)  
+✅ **오래된 미디어 자동 삭제** (30일 후)  
+✅ **오래된 백업 자동 삭제** (7일 후)  
+✅ **localStorage 자동 관리** (90% 초과시 경고)  
+✅ **1초 debounce로 저장 최적화**  
+✅ **AWS S3 자동 업로드** (설정시 무제한 저장소)
+
+### 📖 상세 가이드
+
+- **AWS S3 클라우드 저장소**: [AWS-SETUP.md](./AWS-SETUP.md) ⭐ 추천!
+- **빠른 체크리스트**: [QUICK-CHECKLIST.md](./QUICK-CHECKLIST.md)
+- **전체 최적화 가이드**: [OPTIMIZATION-GUIDE.md](./OPTIMIZATION-GUIDE.md)
+
+### 💡 권장 사항
+
+| 항목 | 권장 | 위험 |
+|------|------|------|
+| 노드 개수 | 50개 미만 | 100개 이상 |
+| localStorage | 70% 미만 | 90% 이상 |
+| 이미지 크기 | 2048px 이하 | 4096px 이상 |
+
+### 🚨 긴급 상황
+
+**localStorage 가득 참 (QuotaExceededError)?**
+
+```bash
+1. Export로 백업 (필수!)
+2. 브라우저 콘솔(F12)에서:
+   localStorage.clear()
+   location.reload()
+3. Import로 백업 복원
+```
+
+---
+
 ## 🆘 문제 해결
 
 ### Q: 이미지 생성이 안 돼요
@@ -240,6 +287,12 @@ A: 프록시 서버가 실행 중인지 확인 (`npm run dev:all`).
 
 ### Q: 캐시 지우면 데이터가 사라져요
 A: Export 버튼으로 백업하세요!
+
+### Q: 노드가 삭제 안 돼요
+A: localStorage가 가득 찼을 수 있습니다. [QUICK-CHECKLIST.md](./QUICK-CHECKLIST.md) 참조.
+
+### Q: 앱이 느려요
+A: 노드 개수를 확인하세요 (100개 이상이면 워크플로우 분리 권장).
 
 ---
 

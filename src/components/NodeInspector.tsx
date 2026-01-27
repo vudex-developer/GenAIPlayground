@@ -1,7 +1,8 @@
-import React, { useRef } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import { useFlowStore } from '../stores/flowStore'
 import { useIMEInput } from '../hooks/useIMEInput'
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
+import { getImage } from '../utils/indexedDB'
 import { X } from 'lucide-react'
 import type {
   TextPromptNodeData,
@@ -328,10 +329,46 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
   const data = node.data as NanoImageNodeData
   const runNanoImageNode = useFlowStore((state) => state.runNanoImageNode)
   const cancelNodeExecution = useFlowStore((state) => state.cancelNodeExecution)
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | undefined>(
+    data.outputImageUrl
+  )
   
   // Ensure resolution and aspectRatio have valid values (for backward compatibility with old nodes)
   const safeResolution = data.resolution || '2K'
   const safeAspectRatio = data.aspectRatio || '1:1'
+
+  // 🔄 IndexedDB/S3에서 이미지 복원
+  useEffect(() => {
+    const loadImage = async () => {
+      if (!data.outputImageUrl) {
+        setDisplayImageUrl(undefined)
+        return
+      }
+
+      // idb: 또는 s3: 참조인 경우
+      if (
+        typeof data.outputImageUrl === 'string' &&
+        (data.outputImageUrl.startsWith('idb:') || data.outputImageUrl.startsWith('s3:'))
+      ) {
+        try {
+          const dataURL = await getImage(data.outputImageUrl)
+          if (dataURL) {
+            setDisplayImageUrl(dataURL)
+          } else {
+            setDisplayImageUrl(undefined)
+          }
+        } catch (error) {
+          console.error('❌ Inspector 이미지 복원 실패:', error)
+          setDisplayImageUrl(undefined)
+        }
+      } else {
+        // 일반 DataURL 또는 HTTP URL
+        setDisplayImageUrl(data.outputImageUrl)
+      }
+    }
+
+    loadImage()
+  }, [data.outputImageUrl])
 
   const getStatusText = (status: string) => {
     switch (status) {
@@ -577,14 +614,18 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
         )
       })()}
 
-      {data.outputImageUrl && (
+      {displayImageUrl && (
         <div>
           <div className="mb-2 text-sm font-medium text-slate-300">Preview</div>
           <div className="max-h-[600px] overflow-auto rounded-lg border border-white/10">
             <img
-              src={data.outputImageUrl}
+              src={displayImageUrl}
               alt="Generated"
               className="w-full"
+              onError={(e) => {
+                console.error('❌ Inspector 이미지 로드 에러:', displayImageUrl)
+                setDisplayImageUrl(undefined)
+              }}
             />
           </div>
         </div>
@@ -606,11 +647,11 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
             Generate
           </button>
         )}
-        {data.outputImageUrl && (
+        {displayImageUrl && (
           <button
             onClick={() => {
               const link = document.createElement('a')
-              link.href = data.outputImageUrl!
+              link.href = displayImageUrl!
               link.download = 'nano-image.png'
               link.click()
             }}
