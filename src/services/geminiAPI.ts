@@ -42,6 +42,7 @@ export class GeminiAPIClient {
     settings: GenerationSettings,
     sourceImageDataUrl?: string,
     model: string = DEFAULT_VIDEO_MODEL,
+    abortSignal?: AbortSignal,
   ): Promise<string> {
     if (settings.mediaType !== 'video') {
       throw new Error('Veo 모델은 video 생성 전용입니다.')
@@ -75,6 +76,7 @@ export class GeminiAPIClient {
           instances: [instance],
           parameters: Object.keys(parameters).length ? parameters : undefined,
         }),
+        signal: abortSignal,
       },
     )
 
@@ -88,8 +90,8 @@ export class GeminiAPIClient {
       throw new Error('Veo 작업 ID를 받지 못했습니다.')
     }
 
-    const videoUri = await this.pollOperation(operation.name)
-    return this.downloadVideo(videoUri)
+    const videoUri = await this.pollOperation(operation.name, abortSignal)
+    return this.downloadVideo(videoUri, abortSignal)
   }
 
   async generateImage(
@@ -98,6 +100,7 @@ export class GeminiAPIClient {
     sourceImageDataUrl?: string,
     model: string = DEFAULT_IMAGE_MODEL,
     imageSize?: '1K' | '2K' | '4K',
+    abortSignal?: AbortSignal,
   ): Promise<{ imageUrl: string; imageDataUrl: string }> {
     const enhancedPrompt = aspectRatio
       ? `${prompt}, aspect ratio ${aspectRatio}`
@@ -142,6 +145,7 @@ export class GeminiAPIClient {
             imageConfig: Object.keys(imageConfig).length ? imageConfig : undefined,
           },
         }),
+        signal: abortSignal,
       },
     )
 
@@ -223,10 +227,23 @@ export class GeminiAPIClient {
     }
   }
 
-  private async pollOperation(operationName: string): Promise<string> {
+  private async pollOperation(operationName: string, abortSignal?: AbortSignal): Promise<string> {
     for (let attempt = 0; attempt < 60; attempt += 1) {
+      // Check if aborted before waiting
+      if (abortSignal?.aborted) {
+        throw new Error('작업이 취소되었습니다.')
+      }
+      
       await sleep(10000)
-      const response = await fetch(`${BASE_URL}/${operationName}?key=${this.apiKey}`)
+      
+      // Check if aborted after waiting
+      if (abortSignal?.aborted) {
+        throw new Error('작업이 취소되었습니다.')
+      }
+      
+      const response = await fetch(`${BASE_URL}/${operationName}?key=${this.apiKey}`, {
+        signal: abortSignal,
+      })
       if (!response.ok) {
         const errorText = await response.text()
         throw new Error(`Veo 상태 확인 실패: ${errorText}`)
@@ -244,9 +261,10 @@ export class GeminiAPIClient {
     throw new Error('Veo 비디오 생성이 제한 시간 내 완료되지 않았습니다.')
   }
 
-  private async downloadVideo(uri: string): Promise<string> {
+  private async downloadVideo(uri: string, abortSignal?: AbortSignal): Promise<string> {
     const response = await fetch(uri, {
       headers: { 'x-goog-api-key': this.apiKey },
+      signal: abortSignal,
     })
     if (!response.ok) {
       const errorText = await response.text()

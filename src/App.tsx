@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import { ReactFlowProvider } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff } from 'lucide-react'
+import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff, Shield } from 'lucide-react'
 import Canvas from './components/Canvas'
 import { OnboardingGuide } from './components/OnboardingGuide'
 import { useFlowStore } from './stores/flowStore'
 import { useNetworkStatus } from './hooks/useNetworkStatus'
+import { getStorageInfo, analyzeStorage, clearStorageByPattern } from './utils/storage'
+import { getAllBackups, restoreBackup, getBackupStats } from './utils/backup'
 import type { WorkflowEdge, WorkflowNode } from './types/nodes'
 import vudexLogo from './assets/vudex-logo.png'
 
@@ -21,9 +23,44 @@ function App() {
   const setApiKey = useFlowStore((state) => state.setApiKey)
   const klingApiKey = useFlowStore((state) => state.klingApiKey)
   const setKlingApiKey = useFlowStore((state) => state.setKlingApiKey)
+  const nodes = useFlowStore((state) => state.nodes)
+  const edges = useFlowStore((state) => state.edges)
   const [showSettings, setShowSettings] = useState(false)
+  const [showBackups, setShowBackups] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
   const isOnline = useNetworkStatus()
+  
+  // 주기적 자동 저장 (30초마다)
+  useEffect(() => {
+    const autoSaveInterval = setInterval(() => {
+      saveWorkflow()
+      console.log('🔄 Auto-saved to localStorage')
+    }, 30000)
+    
+    return () => clearInterval(autoSaveInterval)
+  }, [saveWorkflow])
+  
+  // 페이지 떠날 때 저장
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      saveWorkflow()
+    }
+    
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [saveWorkflow])
+  
+  // nodes나 edges 변경 시 자동 저장 (debounced)
+  useEffect(() => {
+    const saveTimer = setTimeout(() => {
+      const saved = saveWorkflow()
+      if (saved) {
+        console.log('💾 Auto-saved (state changed)')
+      }
+    }, 3000) // 3초 후 저장 (debounce)
+    
+    return () => clearTimeout(saveTimer)
+  }, [nodes, edges, saveWorkflow])
 
   // Keyboard shortcuts for Undo/Redo
   useEffect(() => {
@@ -204,6 +241,17 @@ function App() {
           </label>
           <button
             type="button"
+            onClick={() => setShowBackups(true)}
+            className="rounded-full border border-white/10 bg-[#121824] px-4 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-white/5"
+            title="백업 관리"
+          >
+            <span className="flex items-center gap-1">
+              <Shield className="h-4 w-4" />
+              Backup
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={() => setShowSettings(true)}
             className="rounded-full border border-white/10 bg-[#121824] px-4 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-white/5"
           >
@@ -235,9 +283,183 @@ function App() {
         </main>
       </div>
 
+      {showBackups ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-2xl space-y-4 rounded-xl bg-[#111821] p-5 shadow-lg">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+                  <Shield className="h-5 w-5 text-emerald-400" />
+                  자동 백업 관리
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  5분마다 자동으로 백업이 생성됩니다 (최대 3개 유지)
+                </p>
+              </div>
+            </div>
+
+            {(() => {
+              const backups = getAllBackups()
+              const stats = getBackupStats()
+
+              if (backups.length === 0) {
+                return (
+                  <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-8 text-center">
+                    <Shield className="mx-auto h-12 w-12 text-slate-600" />
+                    <p className="mt-4 text-sm text-slate-400">아직 백업이 없습니다</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Save 버튼을 누르면 자동으로 백업이 생성됩니다
+                    </p>
+                  </div>
+                )
+              }
+
+              return (
+                <>
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
+                    <div className="grid grid-cols-3 gap-4 text-center">
+                      <div>
+                        <div className="text-xs text-slate-400">총 백업</div>
+                        <div className="text-lg font-bold text-emerald-400">{stats.count}개</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400">최신 백업</div>
+                        <div className="text-xs font-semibold text-slate-300">
+                          {stats.latest ? new Date(stats.latest).toLocaleTimeString('ko-KR') : '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400">용량</div>
+                        <div className="text-xs font-semibold text-slate-300">{stats.totalSize}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="max-h-96 space-y-2 overflow-y-auto">
+                    {backups.map((backup) => (
+                      <div
+                        key={backup.timestamp}
+                        className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800/50 p-3 hover:border-slate-600 transition"
+                      >
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-slate-200">
+                            {new Date(backup.timestamp).toLocaleString('ko-KR')}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            노드: {backup.nodeCount}개 / 연결: {backup.edgeCount}개
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (confirm('이 백업으로 복원하시겠습니까?\n\n현재 작업 내용은 유실될 수 있습니다.')) {
+                              const data = restoreBackup(backup.timestamp)
+                              if (data) {
+                                const parsed = JSON.parse(data)
+                                importWorkflow(parsed.nodes || [], parsed.edges || [])
+                                setSaveStatus('백업 복원됨')
+                                setTimeout(() => setSaveStatus(''), 2000)
+                                setShowBackups(false)
+                              } else {
+                                alert('백업 복원에 실패했습니다')
+                              }
+                            }
+                          }}
+                          className="rounded-md bg-emerald-500/20 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/30 transition"
+                        >
+                          복원
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )
+            })()}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowBackups(false)}
+                className="rounded-md border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/5"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showSettings ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md space-y-4 rounded-xl bg-[#111821] p-5 shadow-lg">
+            {/* 저장공간 정보 */}
+            {(() => {
+              const storageInfo = getStorageInfo()
+              const isWarning = storageInfo.percentage > 70
+              const isCritical = storageInfo.percentage > 90
+              
+              return (
+                <div className={`rounded-lg border px-4 py-3 ${
+                  isCritical ? 'border-red-500/30 bg-red-500/5' :
+                  isWarning ? 'border-yellow-500/30 bg-yellow-500/5' :
+                  'border-blue-500/20 bg-blue-500/5'
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-slate-100">
+                      💾 저장공간 사용량
+                    </div>
+                    <div className={`text-xs font-bold ${
+                      isCritical ? 'text-red-400' :
+                      isWarning ? 'text-yellow-400' :
+                      'text-blue-400'
+                    }`}>
+                      {storageInfo.percentage.toFixed(1)}%
+                    </div>
+                  </div>
+                  
+                  {/* Progress bar */}
+                  <div className="relative h-2 w-full rounded-full bg-slate-700 overflow-hidden">
+                    <div
+                      className={`h-full transition-all ${
+                        isCritical ? 'bg-red-500' :
+                        isWarning ? 'bg-yellow-500' :
+                        'bg-blue-500'
+                      }`}
+                      style={{ width: `${Math.min(storageInfo.percentage, 100)}%` }}
+                    />
+                  </div>
+                  
+                  <div className="mt-2 text-[10px] text-slate-400">
+                    {storageInfo.usedMB} MB / {storageInfo.limitMB} MB 사용 중
+                  </div>
+                  
+                  {isCritical && (
+                    <div className="mt-2 text-[10px] text-red-400">
+                      ⚠️ 저장공간이 거의 가득 찼습니다! 오래된 이미지가 자동으로 정리됩니다.
+                    </div>
+                  )}
+                  
+                  {isWarning && !isCritical && (
+                    <div className="mt-2 text-[10px] text-yellow-400">
+                      ⚠️ 저장공간이 부족합니다. Export로 백업을 권장합니다.
+                    </div>
+                  )}
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm('브라우저 저장소를 정리하시겠습니까?\n\n주의: 모든 이미지 데이터가 삭제됩니다. 먼저 Export로 백업하세요!')) {
+                        clearStorageByPattern('nano-banana')
+                        window.location.reload()
+                      }
+                    }}
+                    className="mt-2 w-full rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-400 hover:bg-red-500/20"
+                  >
+                    🗑️ 저장소 정리 (위험!)
+                  </button>
+                </div>
+              )
+            })()}
+            
             <div>
               <div className="text-sm font-semibold text-slate-100">
                 Google Gemini API Key

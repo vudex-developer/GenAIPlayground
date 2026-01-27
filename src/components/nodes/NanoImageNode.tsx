@@ -9,6 +9,7 @@ export default function NanoImageNode({
   selected,
 }: NodeProps<NanoImageNodeData>) {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
+  const openImageModal = useFlowStore((state) => state.openImageModal)
 
   return (
     <div 
@@ -30,7 +31,12 @@ export default function NanoImageNode({
             <img
               src={data.outputImageUrl}
               alt="Generated"
-              className="w-full rounded-md"
+              className="w-full rounded-md cursor-pointer hover:opacity-80 transition"
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                openImageModal(data.outputImageUrl || '')
+              }}
+              title="더블클릭하여 크게 보기"
             />
             {data.status === 'processing' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-md">
@@ -49,11 +55,34 @@ export default function NanoImageNode({
         )}
       </div>
 
+      {/* Prompt input handle */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!h-3 !w-3 !bg-yellow-500"
+        id="prompt"
+        style={{ top: '20%' }}
+        className="!h-3 !w-3 !bg-violet-400"
+        title="Prompt"
       />
+      
+      {/* Reference image input handles */}
+      {Array.from({ length: data.maxReferences || 3 }).map((_, index) => {
+        const refNum = index + 1
+        const handlePosition = 35 + (index * 25)  // Distribute evenly
+        
+        return (
+          <Handle
+            key={`ref-${refNum}`}
+            type="target"
+            position={Position.Left}
+            id={`ref-${refNum}`}
+            style={{ top: `${handlePosition}%` }}
+            className="!h-3 !w-3 !bg-cyan-400"
+            title={`Reference ${refNum}`}
+          />
+        )
+      })}
+      
       <Handle
         type="source"
         position={Position.Right}

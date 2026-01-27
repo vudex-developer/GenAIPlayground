@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from 'reactflow'
 import { MessageSquare } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
+import { useIMEInput } from '../../hooks/useIMEInput'
 import type { TextPromptNodeData } from '../../types/nodes'
 
 export default function TextPromptNode({
@@ -10,6 +11,10 @@ export default function TextPromptNode({
 }: NodeProps<TextPromptNodeData>) {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
   const updateNodeData = useFlowStore((state) => state.updateNodeData)
+
+  const imeProps = useIMEInput(data.prompt, (value) => {
+    updateNodeData(id, { prompt: value })
+  })
 
   return (
     <div 
@@ -27,8 +32,7 @@ export default function TextPromptNode({
 
       <div className="p-3">
         <textarea
-          value={data.prompt}
-          onChange={(e) => updateNodeData(id, { prompt: e.target.value })}
+          {...imeProps}
           onClick={(e) => e.stopPropagation()}
           placeholder="Type your prompt here..."
           className="w-full h-24 rounded-md border border-violet-400/20 bg-[#222d3d] px-2 py-2 text-[11px] text-slate-200 placeholder:text-slate-500 focus:border-violet-400/50 focus:outline-none focus:ring-1 focus:ring-violet-400/50 resize-none"

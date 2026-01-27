@@ -11,8 +11,11 @@ import {
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
 import { KlingAPIClient, MockKlingAPI } from '../services/klingAPI'
 import { retryWithBackoff } from '../utils/retry'
+import { getStorageInfo, prepareForStorage, getStorageWarning } from '../utils/storage'
+import { createBackup } from '../utils/backup'
 import type {
   GeminiVideoNodeData,
+  GridNodeData,
   ImageImportNodeData,
   KlingVideoNodeData,
   MotionPromptNodeData,
@@ -39,9 +42,12 @@ type FlowState = {
   abortControllers: Map<string, AbortController>
   history: HistoryState[]
   historyIndex: number
+  imageModal: { isOpen: boolean; imageUrl: string | null }
   setSelectedNodeId: (id: string | null) => void
   setApiKey: (key: string) => void
   setKlingApiKey: (key: string) => void
+  openImageModal: (imageUrl: string) => void
+  closeImageModal: () => void
   onNodesChange: (changes: NodeChange[]) => void
   onEdgesChange: (changes: EdgeChange[]) => void
   onConnect: (connection: Connection) => void
@@ -57,6 +63,7 @@ type FlowState = {
   runGeminiNode: (id: string) => Promise<void>
   runNanoImageNode: (id: string) => Promise<void>
   runKlingNode: (id: string) => Promise<void>
+  runLLMPromptNode: (id: string) => Promise<void>
   cancelNodeExecution: (id: string) => void
 }
 
@@ -75,17 +82,31 @@ const getEdgeClass = (edge: WorkflowEdge, nodes: WorkflowNode[]) => {
       return 'edge-gemini-video'
     case 'klingVideo':
       return 'edge-kling-video'
+    case 'gridNode':
+      return 'edge-text-prompt' // Use violet color
+    case 'cellRegenerator':
+      return 'edge-motion-prompt' // Use purple color
+    case 'gridComposer':
+      return 'edge-kling-video' // Use emerald color
+    case 'llmPrompt':
+      return 'edge-motion-prompt' // Use pink color
     default:
       return 'edge-default'
   }
 }
 
-const normalizeEdges = (edges: WorkflowEdge[], nodes: WorkflowNode[]) =>
-  edges.map((edge) => ({
-    ...edge,
-    type: 'bezier',
-    className: getEdgeClass(edge, nodes),
-  }))
+const normalizeEdges = (edges: WorkflowEdge[], nodes: WorkflowNode[]) => {
+  const nodeIds = new Set(nodes.map(n => n.id))
+  
+  // Filter out edges that reference deleted nodes
+  return edges
+    .filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    .map((edge) => ({
+      ...edge,
+      type: 'bezier',
+      className: getEdgeClass(edge, nodes),
+    }))
+}
 
 const sanitizeEdgesForStorage = (edges: WorkflowEdge[]) =>
   edges.map(({ source, target, sourceHandle, targetHandle, id }) => ({
@@ -112,6 +133,36 @@ const isConnectionAllowed = (sourceType: NodeType, targetType: NodeType) => {
   if (sourceType === 'textPrompt' && targetType === 'klingVideo') return true
   if (sourceType === 'nanoImage' && targetType === 'klingVideo') return true
   if (sourceType === 'imageImport' && targetType === 'klingVideo') return true
+  // Grid Node connections
+  if (sourceType === 'textPrompt' && targetType === 'gridNode') return true
+  if (sourceType === 'motionPrompt' && targetType === 'gridNode') return true
+  if (sourceType === 'gridNode' && targetType === 'nanoImage') return true
+  // Cell Regenerator connections
+  if (sourceType === 'gridNode' && targetType === 'cellRegenerator') return true
+  if (sourceType === 'nanoImage' && targetType === 'cellRegenerator') return true
+  if (sourceType === 'imageImport' && targetType === 'cellRegenerator') return true
+  if (sourceType === 'cellRegenerator' && targetType === 'nanoImage') return true
+  if (sourceType === 'cellRegenerator' && targetType === 'imageImport') return true
+  // Grid Composer connections
+  if (sourceType === 'gridNode' && targetType === 'gridComposer') return true
+  if (sourceType === 'nanoImage' && targetType === 'gridComposer') return true
+  if (sourceType === 'imageImport' && targetType === 'gridComposer') return true
+  if (sourceType === 'cellRegenerator' && targetType === 'gridComposer') return true
+  if (sourceType === 'gridComposer' && targetType === 'nanoImage') return true
+  if (sourceType === 'gridComposer' && targetType === 'imageImport') return true
+  if (sourceType === 'gridComposer' && targetType === 'geminiVideo') return true
+  if (sourceType === 'gridComposer' && targetType === 'klingVideo') return true
+  // LLM Prompt connections
+  if (sourceType === 'textPrompt' && targetType === 'llmPrompt') return true
+  if (sourceType === 'imageImport' && targetType === 'llmPrompt') return true
+  if (sourceType === 'nanoImage' && targetType === 'llmPrompt') return true
+  if (sourceType === 'gridComposer' && targetType === 'llmPrompt') return true
+  if (sourceType === 'llmPrompt' && targetType === 'textPrompt') return true
+  if (sourceType === 'llmPrompt' && targetType === 'nanoImage') return true
+  if (sourceType === 'llmPrompt' && targetType === 'motionPrompt') return true
+  if (sourceType === 'llmPrompt' && targetType === 'gridNode') return true
+  if (sourceType === 'llmPrompt' && targetType === 'geminiVideo') return true
+  if (sourceType === 'llmPrompt' && targetType === 'klingVideo') return true
   return false
 }
 
@@ -201,13 +252,9 @@ const sanitizeNodesForStorage = (nodes: WorkflowNode[], forExport = false): Work
   nodes.map((node) => {
     const data = { ...(node.data as Record<string, unknown>) }
     
-    // For Export: Keep base64 data for portability
-    // For localStorage: Remove to save space
-    if (!forExport) {
-      delete data.imageDataUrl
-      delete data.outputImageDataUrl
-      delete data.inputImageDataUrl
-    }
+    // 이제 localStorage에도 이미지를 저장합니다
+    // base64 DataURL은 유지 (새로고침 후에도 복원됨)
+    // 단, blob URL은 제거 (페이지 재로드 시 무효화됨)
     
     // Always remove blob URLs (they don't survive page reload)
     if (typeof data.imageUrl === 'string' && data.imageUrl.startsWith('blob:')) {
@@ -217,6 +264,34 @@ const sanitizeNodesForStorage = (nodes: WorkflowNode[], forExport = false): Work
     }
     if (typeof data.outputImageUrl === 'string' && data.outputImageUrl.startsWith('blob:')) {
       delete data.outputImageUrl
+    }
+    if (typeof data.inputImageUrl === 'string' && data.inputImageUrl.startsWith('blob:')) {
+      delete data.inputImageUrl
+    }
+    if (typeof data.composedImageUrl === 'string' && data.composedImageUrl.startsWith('blob:')) {
+      delete data.composedImageUrl
+    }
+    
+    // regeneratedImages 객체 내부의 blob URL도 제거
+    if (data.regeneratedImages && typeof data.regeneratedImages === 'object') {
+      const cleanedImages: Record<string, string> = {}
+      for (const [key, value] of Object.entries(data.regeneratedImages)) {
+        if (typeof value === 'string' && !value.startsWith('blob:')) {
+          cleanedImages[key] = value
+        }
+      }
+      data.regeneratedImages = cleanedImages
+    }
+    
+    // inputImages 객체 내부의 blob URL도 제거
+    if (data.inputImages && typeof data.inputImages === 'object') {
+      const cleanedImages: Record<string, string> = {}
+      for (const [key, value] of Object.entries(data.inputImages)) {
+        if (typeof value === 'string' && !value.startsWith('blob:')) {
+          cleanedImages[key] = value
+        }
+      }
+      data.inputImages = cleanedImages
     }
     if (typeof data.outputVideoUrl === 'string' && data.outputVideoUrl.startsWith('blob:')) {
       delete data.outputVideoUrl
@@ -277,36 +352,76 @@ export const useFlowStore = create<FlowState>()(
       abortControllers: new Map(),
       history: [],
       historyIndex: -1,
+      imageModal: { isOpen: false, imageUrl: null },
       setSelectedNodeId: (id) => set({ selectedNodeId: id }),
       setApiKey: (key) => set({ apiKey: key }),
       setKlingApiKey: (key) => set({ klingApiKey: key }),
+      openImageModal: (imageUrl) => set({ imageModal: { isOpen: true, imageUrl } }),
+      closeImageModal: () => set({ imageModal: { isOpen: false, imageUrl: null } }),
   onNodesChange: (changes) => {
-    const newNodes = applyNodeChanges(changes, get().nodes) as WorkflowNode[]
-    set({ 
-      nodes: newNodes,
-      edges: normalizeEdges(get().edges, newNodes)
-    })
-    // Save to history for add/remove changes (not for select/drag)
-    const shouldSaveHistory = changes.some(change => 
-      change.type === 'add' || change.type === 'remove'
-    )
-    if (shouldSaveHistory) {
-      saveToHistory(get, set)
+    try {
+      // Clean up abort controllers for removed nodes
+      const removedNodeIds = changes
+        .filter(change => change.type === 'remove')
+        .map(change => (change as any).id)
+      
+      if (removedNodeIds.length > 0) {
+        const { abortControllers } = get()
+        removedNodeIds.forEach(id => {
+          const controller = abortControllers.get(id)
+          if (controller) {
+            console.log('🧹 Cleaning up abort controller for deleted node:', id)
+            controller.abort()
+            abortControllers.delete(id)
+          }
+        })
+        if (removedNodeIds.length > 0) {
+          set({ abortControllers: new Map(abortControllers) })
+        }
+      }
+      
+      const currentNodes = get().nodes
+      const currentEdges = get().edges
+      const newNodes = applyNodeChanges(changes, currentNodes) as WorkflowNode[]
+      const newEdges = normalizeEdges(currentEdges, newNodes)
+      
+      set({ 
+        nodes: newNodes,
+        edges: newEdges
+      })
+      
+      // Save to history for add/remove changes (not for select/drag)
+      const shouldSaveHistory = changes.some(change => 
+        change.type === 'add' || change.type === 'remove'
+      )
+      if (shouldSaveHistory) {
+        saveToHistory(get, set)
+      }
+    } catch (error) {
+      console.error('Error in onNodesChange:', error)
+      // Don't crash the app, just log the error
     }
   },
   onEdgesChange: (changes) => {
-    set({
-      edges: normalizeEdges(
-        applyEdgeChanges(changes, get().edges),
-        get().nodes,
-      ),
-    })
-    // Save to history for add/remove changes
-    const shouldSaveHistory = changes.some(change => 
-      change.type === 'add' || change.type === 'remove'
-    )
-    if (shouldSaveHistory) {
-      saveToHistory(get, set)
+    try {
+      const currentEdges = get().edges
+      const currentNodes = get().nodes
+      const newEdges = applyEdgeChanges(changes, currentEdges)
+      
+      set({
+        edges: normalizeEdges(newEdges, currentNodes),
+      })
+      
+      // Save to history for add/remove changes
+      const shouldSaveHistory = changes.some(change => 
+        change.type === 'add' || change.type === 'remove'
+      )
+      if (shouldSaveHistory) {
+        saveToHistory(get, set)
+      }
+    } catch (error) {
+      console.error('Error in onEdgesChange:', error)
+      // Don't crash the app, just log the error
     }
   },
   onConnect: (connection) => {
@@ -335,21 +450,86 @@ export const useFlowStore = create<FlowState>()(
     set({ nodes: [...get().nodes, node] })
     saveToHistory(get, set)
   },
-  updateNodeData: (id, data) =>
+  updateNodeData: (id, data) => {
     set({
-      nodes: get().nodes.map((node) =>
-        node.id === id ? { ...node, data } : node,
-      ),
-    }),
+      nodes: get().nodes.map((node) => {
+        if (node.id === id) {
+          // Support partial updates by spreading existing data
+          const newData = typeof data === 'function' ? data(node.data) : data
+          return { ...node, data: { ...node.data, ...newData } }
+        }
+        return node
+      }),
+    })
+    // Note: persist middleware will automatically save to localStorage
+  },
   saveWorkflow: () => {
     try {
+      // 📊 저장 전에 저장공간 체크
+      const storageInfo = getStorageInfo()
+      console.log(`💾 Storage usage: ${storageInfo.usedMB} MB / ${storageInfo.limitMB} MB (${storageInfo.percentage.toFixed(1)}%)`)
+      
+      // ⚠️ 저장공간 경고
+      const warning = getStorageWarning(storageInfo)
+      if (warning) {
+        console.warn(warning)
+      }
+      
+      // 🧹 필요시 자동 정리
+      const nodesToSave = prepareForStorage(get().nodes, storageInfo.isCritical)
+      
       const payload = JSON.stringify({
-        nodes: sanitizeNodesForStorage(get().nodes),
+        nodes: sanitizeNodesForStorage(nodesToSave),
         edges: get().edges,
       })
-      localStorage.setItem(STORAGE_KEY, payload)
-      return true
-    } catch {
+      
+      // localStorage에 저장 시도
+      try {
+        localStorage.setItem(STORAGE_KEY, payload)
+        
+        // 🔒 자동 백업 생성 (5분마다 한 번씩만)
+        const lastBackupKey = 'last-backup-time'
+        const lastBackup = parseInt(localStorage.getItem(lastBackupKey) || '0')
+        const now = Date.now()
+        const fiveMinutes = 5 * 60 * 1000
+        
+        if (now - lastBackup > fiveMinutes) {
+          createBackup(payload)
+          localStorage.setItem(lastBackupKey, now.toString())
+        }
+        
+        // ✅ 저장 성공 후 저장공간 재확인
+        const newStorageInfo = getStorageInfo()
+        console.log(`✅ Saved! New storage: ${newStorageInfo.usedMB} MB (${newStorageInfo.percentage.toFixed(1)}%)`)
+        
+        return true
+      } catch (storageError: any) {
+        // 용량 초과 시 긴급 정리 후 재시도
+        if (storageError.name === 'QuotaExceededError') {
+          console.warn('⚠️ localStorage quota exceeded. Attempting emergency cleanup...')
+          
+          // 긴급 정리: 모든 이미지 DataUrl 제거
+          const emergencyNodes = prepareForStorage(get().nodes, true)
+          const emergencyPayload = JSON.stringify({
+            nodes: sanitizeNodesForStorage(emergencyNodes),
+            edges: get().edges,
+          })
+          
+          try {
+            localStorage.setItem(STORAGE_KEY, emergencyPayload)
+            console.log('✅ Saved after emergency cleanup')
+            alert('⚠️ 저장공간이 부족하여 일부 이미지 데이터가 제거되었습니다.\n\n이미지 URL은 유지되지만, 오프라인에서는 표시되지 않을 수 있습니다.\n\n"Export" 버튼으로 워크플로우를 백업하는 것을 권장합니다.')
+            return true
+          } catch (finalError) {
+            console.error('❌ Save failed even after emergency cleanup')
+            alert('⛔ 저장 공간이 부족합니다!\n\n해결 방법:\n1. "Export" 버튼으로 워크플로우를 파일로 백업하세요.\n2. 일부 노드를 삭제하여 용량을 줄이세요.\n3. 브라우저 개발자 도구(F12) > Application > Storage > Local Storage에서 데이터를 정리하세요.')
+            return false
+          }
+        }
+        return false
+      }
+    } catch (error) {
+      console.error('Save workflow failed:', error)
       return false
     }
   },
@@ -522,30 +702,130 @@ export const useFlowStore = create<FlowState>()(
     }
 
     const incoming = getIncomingNodes(id, edges, get().nodes)
-    const promptNode = incoming.find(
-      (node) => node.type === 'textPrompt' || node.type === 'motionPrompt',
-    )
-    const imageNode =
-      incoming.find((node) => node.type === 'imageImport') ??
-      incoming.find((node) => node.type === 'nanoImage')
-    const prompt =
-      promptNode?.type === 'textPrompt'
-        ? (promptNode.data as TextPromptNodeData).prompt
-        : promptNode?.type === 'motionPrompt'
-          ? (promptNode.data as MotionPromptNodeData).combinedPrompt
-          : ''
+    
+    // Get prompt from various sources
+    let prompt = ''
+    
+    // Check for gridNode
+    const gridNodeEdge = edges.find((e) => e.target === id && 
+      get().nodes.find(n => n.id === e.source)?.type === 'gridNode')
+    
+    if (gridNodeEdge) {
+      const gridNode = get().nodes.find((n) => n.id === gridNodeEdge.source)
+      if (gridNode?.type === 'gridNode') {
+        const data = gridNode.data as GridNodeData
+        const slotId = gridNodeEdge.sourceHandle
+        prompt = slotId ? data.generatedPrompts?.[slotId] || '' : ''
+      }
+    } else {
+      // Check for prompt handle connection
+      const promptEdge = edges.find((e) => e.target === id && e.targetHandle === 'prompt')
+      if (promptEdge) {
+        const promptNode = get().nodes.find((n) => n.id === promptEdge.source)
+        prompt =
+          promptNode?.type === 'textPrompt'
+            ? (promptNode.data as TextPromptNodeData).prompt
+            : promptNode?.type === 'motionPrompt'
+              ? (promptNode.data as MotionPromptNodeData).combinedPrompt
+              : promptNode?.type === 'llmPrompt'
+                ? (promptNode.data as any).outputPrompt || ''
+                : ''
+      } else {
+        // Fallback: Original prompt logic (any connection)
+        const promptNode = incoming.find(
+          (node) => node.type === 'textPrompt' || node.type === 'motionPrompt' || node.type === 'llmPrompt',
+        )
+        prompt =
+          promptNode?.type === 'textPrompt'
+            ? (promptNode.data as TextPromptNodeData).prompt
+            : promptNode?.type === 'motionPrompt'
+              ? (promptNode.data as MotionPromptNodeData).combinedPrompt
+              : promptNode?.type === 'llmPrompt'
+                ? (promptNode.data as any).outputPrompt || ''
+                : ''
+      }
+    }
+    
+    // Collect multiple reference images
+    const referenceImages: string[] = []
+    const referencePrompts: string[] = []
+    const data = current.data as NanoImageNodeData
+    const maxRefs = data.maxReferences || 3
+    
+    // Check each ref-N handle
+    for (let i = 1; i <= maxRefs; i++) {
+      const refEdge = edges.find((e) => e.target === id && e.targetHandle === `ref-${i}`)
+      if (refEdge) {
+        const refNode = get().nodes.find((n) => n.id === refEdge.source)
+        if (refNode) {
+          let imageDataUrl: string | undefined
+          let refPrompt: string | undefined
+          
+          if (refNode.type === 'imageImport') {
+            const imgData = refNode.data as ImageImportNodeData
+            imageDataUrl = imgData.imageDataUrl
+            refPrompt = getIncomingTextPrompt(refNode.id, edges, get().nodes) ?? imgData.referencePrompt
+          } else if (refNode.type === 'nanoImage') {
+            const imgData = refNode.data as NanoImageNodeData
+            imageDataUrl = imgData.outputImageDataUrl
+          } else if (refNode.type === 'gridComposer') {
+            const imgData = refNode.data as any
+            imageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+          } else if (refNode.type === 'cellRegenerator') {
+            const imgData = refNode.data as any
+            // For cell regenerator, try to get image from sourceHandle (e.g., S1, S2, etc.)
+            const cellId = refEdge.sourceHandle
+            if (cellId && imgData.regeneratedImages?.[cellId]) {
+              imageDataUrl = imgData.regeneratedImages[cellId]
+            }
+          }
+          
+          if (imageDataUrl) {
+            referenceImages.push(imageDataUrl)
+            if (refPrompt) {
+              referencePrompts.push(`Reference ${i}: ${refPrompt}`)
+            }
+          }
+        }
+      }
+    }
+    
+    // Fallback: Check for old-style connection (no handle specified)
+    if (referenceImages.length === 0) {
+      const imageNode =
+        incoming.find((node) => node.type === 'imageImport') ??
+        incoming.find((node) => node.type === 'nanoImage') ??
+        incoming.find((node) => node.type === 'gridComposer') ??
+        incoming.find((node) => node.type === 'cellRegenerator')
 
-    const inputImageDataUrl =
-      imageNode?.type === 'imageImport'
-        ? (imageNode.data as ImageImportNodeData).imageDataUrl
-        : imageNode?.type === 'nanoImage'
-          ? (imageNode.data as NanoImageNodeData).outputImageDataUrl
+      let inputImageDataUrl: string | undefined
+      
+      if (imageNode?.type === 'imageImport') {
+        inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
+      } else if (imageNode?.type === 'nanoImage') {
+        inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+      } else if (imageNode?.type === 'gridComposer') {
+        const imgData = imageNode.data as any
+        inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+      } else if (imageNode?.type === 'cellRegenerator') {
+        // For cell regenerator without specific handle, we can't determine which cell to use
+        // User should use specific cell output handles (S1, S2, etc.)
+        inputImageDataUrl = undefined
+      }
+      
+      const referencePrompt =
+        imageNode?.type === 'imageImport'
+          ? getIncomingTextPrompt(imageNode.id, edges, get().nodes) ??
+            (imageNode.data as ImageImportNodeData).referencePrompt
           : undefined
-    const referencePrompt =
-      imageNode?.type === 'imageImport'
-        ? getIncomingTextPrompt(imageNode.id, edges, get().nodes) ??
-          (imageNode.data as ImageImportNodeData).referencePrompt
-        : undefined
+      
+      if (inputImageDataUrl) {
+        referenceImages.push(inputImageDataUrl)
+        if (referencePrompt) {
+          referencePrompts.push(`Reference 1: ${referencePrompt}`)
+        }
+      }
+    }
 
     if (!prompt.trim()) {
       updateNode((prev) => ({
@@ -572,26 +852,32 @@ export const useFlowStore = create<FlowState>()(
         throw new Error('작업이 취소되었습니다.')
       }
 
-      const data = current.data as NanoImageNodeData
-      const finalPrompt = referencePrompt
-        ? `${prompt}, focus on: ${referencePrompt}`
+      // Add reference prompts to main prompt if available
+      const enhancedPrompt = referencePrompts.length > 0
+        ? `${prompt}\n\n${referencePrompts.join('\n')}`
         : prompt
+      
       const model = data.model ?? 'gemini-3-pro-image-preview'
       
       console.log('🎨 Nano Image Generation:', {
         model,
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
+        referenceCount: referenceImages.length,
       })
+      
+      // Use first reference image as primary input (for backward compatibility)
+      const primaryReference = referenceImages[0]
       
       // ✅ Apply retry logic with exponential backoff
       const result = await retryWithBackoff(
         () => client.generateImage(
-          finalPrompt,
+          enhancedPrompt,
           data.aspectRatio,
-          inputImageDataUrl,
+          primaryReference,
           model,
           data.resolution,
+          abortController.signal,
         ),
         {
           maxAttempts: 3,
@@ -689,30 +975,40 @@ export const useFlowStore = create<FlowState>()(
     const incoming = getIncomingNodes(id, edges, get().nodes)
     const imageNode =
       incoming.find((node) => node.type === 'imageImport') ??
-      incoming.find((node) => node.type === 'nanoImage')
+      incoming.find((node) => node.type === 'nanoImage') ??
+      incoming.find((node) => node.type === 'gridComposer') ??
+      incoming.find((node) => node.type === 'cellRegenerator')
     const promptNode = incoming.find(
-      (node) => node.type === 'motionPrompt' || node.type === 'textPrompt',
+      (node) => node.type === 'motionPrompt' || node.type === 'textPrompt' || node.type === 'llmPrompt',
     )
 
-    const inputImageUrl =
-      imageNode?.type === 'imageImport'
-        ? (imageNode.data as ImageImportNodeData).imageUrl
-        : imageNode?.type === 'nanoImage'
-          ? (imageNode.data as NanoImageNodeData).outputImageUrl
-          : undefined
-    const inputImageDataUrl =
-      imageNode?.type === 'imageImport'
-        ? (imageNode.data as ImageImportNodeData).imageDataUrl
-        : imageNode?.type === 'nanoImage'
-          ? (imageNode.data as NanoImageNodeData).outputImageDataUrl
-          : undefined
+    let inputImageUrl: string | undefined
+    let inputImageDataUrl: string | undefined
+    
+    if (imageNode?.type === 'imageImport') {
+      inputImageUrl = (imageNode.data as ImageImportNodeData).imageUrl
+      inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
+    } else if (imageNode?.type === 'nanoImage') {
+      inputImageUrl = (imageNode.data as NanoImageNodeData).outputImageUrl
+      inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+    } else if (imageNode?.type === 'gridComposer') {
+      const imgData = imageNode.data as any
+      inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
+      inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+    } else if (imageNode?.type === 'cellRegenerator') {
+      // Cell Regenerator should use specific cell outputs
+      inputImageUrl = undefined
+      inputImageDataUrl = undefined
+    }
 
     const inputPrompt =
       promptNode?.type === 'motionPrompt'
         ? (promptNode.data as MotionPromptNodeData).combinedPrompt
         : promptNode?.type === 'textPrompt'
           ? (promptNode.data as TextPromptNodeData).prompt
-          : ''
+          : promptNode?.type === 'llmPrompt'
+            ? (promptNode.data as any).outputPrompt || ''
+            : ''
 
     if (!inputImageUrl || !inputPrompt) {
       updateNode((prev) => ({
@@ -767,6 +1063,7 @@ export const useFlowStore = create<FlowState>()(
           },
           inputImageDataUrl,
           settings.model,
+          abortController.signal,
         ),
         {
           maxAttempts: 2, // Less retries for video (expensive)
@@ -863,7 +1160,7 @@ export const useFlowStore = create<FlowState>()(
     )
     const startImageNode = startImageEdges.find((e) => {
       const node = nodes.find((n) => n.id === e.source)
-      return node?.type === 'imageImport' || node?.type === 'nanoImage'
+      return node?.type === 'imageImport' || node?.type === 'nanoImage' || node?.type === 'gridComposer'
     })
     const startImageNodeData = startImageNode ? nodes.find((n) => n.id === startImageNode.source) : undefined
     
@@ -873,50 +1170,56 @@ export const useFlowStore = create<FlowState>()(
     )
     const endImageNode = endImageEdges.find((e) => {
       const node = nodes.find((n) => n.id === e.source)
-      return node?.type === 'imageImport' || node?.type === 'nanoImage'
+      return node?.type === 'imageImport' || node?.type === 'nanoImage' || node?.type === 'gridComposer'
     })
     const endImageNodeData = endImageNode ? nodes.find((n) => n.id === endImageNode.source) : undefined
 
     // Prompt 노드
     const incoming = getIncomingNodes(id, edges, get().nodes)
     const promptNode = incoming.find(
-      (node) => node.type === 'motionPrompt' || node.type === 'textPrompt',
+      (node) => node.type === 'motionPrompt' || node.type === 'textPrompt' || node.type === 'llmPrompt',
     )
 
     // Start Image 데이터
-    const inputImageUrl =
-      startImageNodeData?.type === 'imageImport'
-        ? (startImageNodeData.data as ImageImportNodeData).imageUrl
-        : startImageNodeData?.type === 'nanoImage'
-          ? (startImageNodeData.data as NanoImageNodeData).outputImageUrl
-          : undefined
-    const inputImageDataUrl =
-      startImageNodeData?.type === 'imageImport'
-        ? (startImageNodeData.data as ImageImportNodeData).imageDataUrl
-        : startImageNodeData?.type === 'nanoImage'
-          ? (startImageNodeData.data as NanoImageNodeData).outputImageDataUrl
-          : undefined
-
+    let inputImageUrl: string | undefined
+    let inputImageDataUrl: string | undefined
+    
+    if (startImageNodeData?.type === 'imageImport') {
+      inputImageUrl = (startImageNodeData.data as ImageImportNodeData).imageUrl
+      inputImageDataUrl = (startImageNodeData.data as ImageImportNodeData).imageDataUrl
+    } else if (startImageNodeData?.type === 'nanoImage') {
+      inputImageUrl = (startImageNodeData.data as NanoImageNodeData).outputImageUrl
+      inputImageDataUrl = (startImageNodeData.data as NanoImageNodeData).outputImageDataUrl
+    } else if (startImageNodeData?.type === 'gridComposer') {
+      const imgData = startImageNodeData.data as any
+      inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
+      inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+    }
+    
     // End Image 데이터
-    const endImageUrl =
-      endImageNodeData?.type === 'imageImport'
-        ? (endImageNodeData.data as ImageImportNodeData).imageUrl
-        : endImageNodeData?.type === 'nanoImage'
-          ? (endImageNodeData.data as NanoImageNodeData).outputImageUrl
-          : undefined
-    const endImageDataUrl =
-      endImageNodeData?.type === 'imageImport'
-        ? (endImageNodeData.data as ImageImportNodeData).imageDataUrl
-        : endImageNodeData?.type === 'nanoImage'
-          ? (endImageNodeData.data as NanoImageNodeData).outputImageDataUrl
-          : undefined
+    let endImageUrl: string | undefined
+    let endImageDataUrl: string | undefined
+    
+    if (endImageNodeData?.type === 'imageImport') {
+      endImageUrl = (endImageNodeData.data as ImageImportNodeData).imageUrl
+      endImageDataUrl = (endImageNodeData.data as ImageImportNodeData).imageDataUrl
+    } else if (endImageNodeData?.type === 'nanoImage') {
+      endImageUrl = (endImageNodeData.data as NanoImageNodeData).outputImageUrl
+      endImageDataUrl = (endImageNodeData.data as NanoImageNodeData).outputImageDataUrl
+    } else if (endImageNodeData?.type === 'gridComposer') {
+      const imgData = endImageNodeData.data as any
+      endImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
+      endImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+    }
 
     const inputPrompt =
       promptNode?.type === 'motionPrompt'
         ? (promptNode.data as MotionPromptNodeData).combinedPrompt
         : promptNode?.type === 'textPrompt'
           ? (promptNode.data as TextPromptNodeData).prompt
-          : ''
+          : promptNode?.type === 'llmPrompt'
+            ? (promptNode.data as any).outputPrompt || ''
+            : ''
 
     if (!inputImageUrl || !inputImageDataUrl || !inputPrompt) {
       updateNode((prev) => ({
@@ -1063,7 +1366,8 @@ export const useFlowStore = create<FlowState>()(
         )
         const imageNode =
           incoming.find((node) => node.type === 'imageImport') ??
-          incoming.find((node) => node.type === 'nanoImage')
+          incoming.find((node) => node.type === 'nanoImage') ??
+          incoming.find((node) => node.type === 'gridComposer')
         const prompt =
           promptNode?.type === 'textPrompt'
             ? (promptNode.data as TextPromptNodeData).prompt
@@ -1071,12 +1375,17 @@ export const useFlowStore = create<FlowState>()(
               ? (promptNode.data as MotionPromptNodeData).combinedPrompt
               : ''
 
-        const inputImageDataUrl =
-          imageNode?.type === 'imageImport'
-            ? (imageNode.data as ImageImportNodeData).imageDataUrl
-            : imageNode?.type === 'nanoImage'
-              ? (imageNode.data as NanoImageNodeData).outputImageDataUrl
-              : undefined
+        let inputImageDataUrl: string | undefined
+        
+        if (imageNode?.type === 'imageImport') {
+          inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
+        } else if (imageNode?.type === 'nanoImage') {
+          inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+        } else if (imageNode?.type === 'gridComposer') {
+          const imgData = imageNode.data as any
+          inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+        }
+        
         const referencePrompt =
           imageNode?.type === 'imageImport'
             ? getIncomingTextPrompt(imageNode.id, edges, get().nodes) ??
@@ -1145,23 +1454,26 @@ export const useFlowStore = create<FlowState>()(
       if (current.type === 'geminiVideo') {
         const imageNode =
           incoming.find((node) => node.type === 'imageImport') ??
-          incoming.find((node) => node.type === 'nanoImage')
+          incoming.find((node) => node.type === 'nanoImage') ??
+          incoming.find((node) => node.type === 'gridComposer')
         const promptNode = incoming.find(
           (node) => node.type === 'motionPrompt' || node.type === 'textPrompt',
         )
 
-        const inputImageUrl =
-          imageNode?.type === 'imageImport'
-            ? (imageNode.data as ImageImportNodeData).imageUrl
-            : imageNode?.type === 'nanoImage'
-              ? (imageNode.data as NanoImageNodeData).outputImageUrl
-              : undefined
-        const inputImageDataUrl =
-          imageNode?.type === 'imageImport'
-            ? (imageNode.data as ImageImportNodeData).imageDataUrl
-            : imageNode?.type === 'nanoImage'
-              ? (imageNode.data as NanoImageNodeData).outputImageDataUrl
-              : undefined
+        let inputImageUrl: string | undefined
+        let inputImageDataUrl: string | undefined
+        
+        if (imageNode?.type === 'imageImport') {
+          inputImageUrl = (imageNode.data as ImageImportNodeData).imageUrl
+          inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
+        } else if (imageNode?.type === 'nanoImage') {
+          inputImageUrl = (imageNode.data as NanoImageNodeData).outputImageUrl
+          inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+        } else if (imageNode?.type === 'gridComposer') {
+          const imgData = imageNode.data as any
+          inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
+          inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+        }
 
         const inputPrompt =
           promptNode?.type === 'motionPrompt'
@@ -1234,30 +1546,297 @@ export const useFlowStore = create<FlowState>()(
 
     }
   },
+  runLLMPromptNode: async (id) => {
+    const { nodes, edges } = get()
+    const current = nodes.find((node) => node.id === id)
+    if (!current || current.type !== 'llmPrompt') return
+
+    const data = current.data as any  // LLMPromptNodeData
+    
+    // Prevent duplicate execution
+    if (data.status === 'processing') {
+      console.warn('⚠️ LLM node is already processing')
+      return
+    }
+
+    const updateNode = (updater: (data: NodeData) => NodeData) => {
+      set({
+        nodes: get().nodes.map((node) =>
+          node.id === id ? { ...node, data: updater(node.data) } : node,
+        ),
+      })
+    }
+
+    // Get input prompt from connected node or use internal input
+    let inputPrompt = data.inputPrompt
+    
+    const incoming = getIncomingNodes(id, edges, get().nodes)
+    
+    // Check for prompt connection
+    const promptEdge = edges.find((e) => e.target === id && e.targetHandle === 'prompt')
+    if (promptEdge) {
+      const promptNode = get().nodes.find((n) => n.id === promptEdge.source)
+      if (promptNode?.type === 'textPrompt') {
+        inputPrompt = (promptNode.data as any).prompt || inputPrompt
+      }
+    }
+    
+    // Check for image connection
+    let referenceImageDataUrl: string | undefined
+    const imageEdge = edges.find((e) => e.target === id && e.targetHandle === 'image')
+    if (imageEdge) {
+      const imageNode = get().nodes.find((n) => n.id === imageEdge.source)
+      if (imageNode?.type === 'imageImport') {
+        referenceImageDataUrl = (imageNode.data as any).imageDataUrl
+      } else if (imageNode?.type === 'nanoImage') {
+        // Try both outputImageDataUrl and outputImageUrl
+        const nanoData = imageNode.data as any
+        referenceImageDataUrl = nanoData.outputImageDataUrl || nanoData.outputImageUrl
+      } else if (imageNode?.type === 'gridComposer') {
+        referenceImageDataUrl = (imageNode.data as any).composedImageDataUrl || (imageNode.data as any).composedImageUrl
+      }
+      
+      // Update node with reference image
+      if (referenceImageDataUrl) {
+        updateNode((prev) => ({
+          ...prev,
+          referenceImageUrl: referenceImageDataUrl,
+          referenceImageDataUrl: referenceImageDataUrl,
+        }))
+      } else {
+        console.warn('⚠️ LLM: Image connected but no image data found', { 
+          nodeType: imageNode?.type,
+          nodeData: imageNode?.data 
+        })
+      }
+    }
+
+    // For image-based modes, image is required
+    if ((data.mode === 'describe' || data.mode === 'analyze') && !referenceImageDataUrl) {
+      const hasImageConnection = edges.some((e) => e.target === id && e.targetHandle === 'image')
+      const errorMsg = hasImageConnection
+        ? '이미지가 연결되었지만 이미지 데이터를 찾을 수 없습니다. 이미지를 먼저 생성한 후 다시 시도해주세요.'
+        : '이미지 기반 모드는 이미지 연결이 필요합니다. 이미지 노드를 하단 (하늘색) 핸들에 연결하세요.'
+      
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: errorMsg,
+      }))
+      return
+    }
+    
+    // For text-based modes, prompt is required (but image is optional)
+    if ((data.mode !== 'describe' && data.mode !== 'analyze') && !inputPrompt.trim() && !referenceImageDataUrl) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Text Prompt 노드를 상단 (분홍) 핸들에 연결하거나 이미지를 하단 (하늘색) 핸들에 연결해주세요.',
+      }))
+      return
+    }
+
+    updateNode((prev) => ({
+      ...prev,
+      status: 'processing',
+      error: undefined,
+    }))
+
+    const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
+    
+    if (!apiKey) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Gemini API Key가 필요합니다.',
+      }))
+      return
+    }
+
+    try {
+      // Build system instruction based on mode and settings
+      let systemInstruction = ''
+      
+      if (data.mode === 'expand') {
+        systemInstruction = `You are a professional prompt engineer. Your task is to expand the given simple idea into a detailed, effective prompt for AI ${data.targetUse} generation.`
+      } else if (data.mode === 'improve') {
+        systemInstruction = `You are a professional prompt engineer. Your task is to improve and optimize the given prompt for better AI ${data.targetUse} generation results.`
+      } else if (data.mode === 'translate') {
+        systemInstruction = `You are a professional translator. Translate the given prompt between Korean and English, maintaining all important details and nuances.`
+      } else if (data.mode === 'simplify') {
+        systemInstruction = `You are a professional editor. Simplify the given prompt to its core essence while maintaining effectiveness for AI ${data.targetUse} generation.`
+      } else if (data.mode === 'describe') {
+        systemInstruction = `You are a professional image analyst. Your task is to describe the given image in detail and create an effective prompt that could be used to generate a similar image.`
+      } else if (data.mode === 'analyze') {
+        systemInstruction = `You are a professional image analyst. Your task is to analyze the given image in great detail, including composition, style, lighting, colors, subjects, and create a comprehensive prompt for AI ${data.targetUse} generation.`
+      }
+
+      // Add style guidance
+      if (data.style === 'detailed') {
+        systemInstruction += ` Output should be highly detailed with rich descriptions.`
+      } else if (data.style === 'concise') {
+        systemInstruction += ` Output should be concise and to the point.`
+      } else if (data.style === 'creative') {
+        systemInstruction += ` Output should be creative and artistic with vivid imagery.`
+      } else if (data.style === 'professional') {
+        systemInstruction += ` Output should be professional and technically precise.`
+      }
+
+      // Add language guidance
+      if (data.language === 'ko') {
+        systemInstruction += ` Output must be in Korean.`
+      } else if (data.language === 'en') {
+        systemInstruction += ` Output must be in English.`
+      } else {
+        systemInstruction += ` Detect input language and use the same language for output.`
+      }
+
+      systemInstruction += ` Only output the final prompt, no explanations or additional text.`
+
+      // Prepare content parts
+      const contentParts: any[] = []
+      
+      // Add image if available
+      if (referenceImageDataUrl) {
+        // Extract base64 data from data URL
+        const base64Match = referenceImageDataUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+        if (base64Match) {
+          const mimeType = `image/${base64Match[1]}`
+          const base64Data = base64Match[2]
+          
+          contentParts.push({
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Data
+            }
+          })
+        }
+      }
+      
+      // Add text prompt
+      if (inputPrompt.trim()) {
+        contentParts.push({
+          text: inputPrompt
+        })
+      } else if (data.mode === 'describe') {
+        contentParts.push({
+          text: 'Describe this image in detail and create a prompt for generating a similar image.'
+        })
+      } else if (data.mode === 'analyze') {
+        contentParts.push({
+          text: 'Analyze this image comprehensively (composition, style, lighting, colors, subjects, mood) and create a detailed prompt for AI image generation.'
+        })
+      } else if (referenceImageDataUrl) {
+        // If only image is provided without text, use a default instruction
+        contentParts.push({
+          text: 'Describe this image and create an effective prompt for AI image generation.'
+        })
+      }
+      
+      // Validate we have content to send
+      if (contentParts.length === 0) {
+        throw new Error('프롬프트 또는 이미지를 입력해주세요.')
+      }
+
+      // Call Gemini API
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${data.model}:generateContent?key=${apiKey}`
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: contentParts
+          }],
+          systemInstruction: {
+            parts: [{
+              text: systemInstruction
+            }]
+          },
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1024,
+          }
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error?.message || `API Error: ${response.status}`)
+      }
+
+      const result = await response.json()
+      const outputPrompt = result.candidates?.[0]?.content?.parts?.[0]?.text || ''
+
+      if (!outputPrompt) {
+        throw new Error('LLM이 응답을 생성하지 못했습니다.')
+      }
+
+      updateNode((prev) => ({
+        ...prev,
+        status: 'completed',
+        outputPrompt: outputPrompt.trim(),
+        error: undefined,
+      }))
+    } catch (error: any) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: formatErrorMessage(error),
+      }))
+    }
+  },
   cancelNodeExecution: (id) => {
+    console.log('🛑 Cancelling node execution:', id)
     const { abortControllers } = get()
     const controller = abortControllers.get(id)
     if (controller) {
-      controller.abort()
-      abortControllers.delete(id)
-      set({ abortControllers: new Map(abortControllers) })
-      
-      // Update node status to idle
-      set({
-        nodes: get().nodes.map((node) =>
-          node.id === id
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  status: 'idle',
-                  error: '작업이 취소되었습니다.',
-                  progress: 0,
-                },
-              }
-            : node,
-        ),
-      })
+      try {
+        controller.abort()
+        abortControllers.delete(id)
+        set({ abortControllers: new Map(abortControllers) })
+        
+        console.log('✅ Abort controller cancelled successfully')
+        
+        // Update node status to idle immediately
+        set({
+          nodes: get().nodes.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    status: 'idle',
+                    error: '작업이 취소되었습니다.',
+                    progress: 0,
+                  },
+                }
+              : node,
+          ),
+        })
+      } catch (error) {
+        console.error('❌ Error cancelling node:', error)
+        // Still update status even if abort fails
+        set({
+          nodes: get().nodes.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    status: 'idle',
+                    error: '작업 취소 중 오류가 발생했습니다.',
+                    progress: 0,
+                  },
+                }
+              : node,
+          ),
+        })
+      }
+    } else {
+      console.warn('⚠️ No abort controller found for node:', id)
     }
   },
     }),
@@ -1271,7 +1850,13 @@ export const useFlowStore = create<FlowState>()(
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
-          state.edges = normalizeEdges(state.edges, state.nodes)
+          try {
+            state.edges = normalizeEdges(state.edges, state.nodes)
+          } catch (error) {
+            console.error('Error normalizing edges on rehydrate:', error)
+            // Reset to safe state if normalization fails
+            state.edges = []
+          }
         }
       },
     }

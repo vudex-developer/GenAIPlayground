@@ -11,6 +11,7 @@ export default function ImageImportNode({
 }: NodeProps<ImageImportNodeData>) {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
   const updateNodeData = useFlowStore((state) => state.updateNodeData)
+  const openImageModal = useFlowStore((state) => state.openImageModal)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   const handleFileUpload = async (file: File) => {
@@ -69,6 +70,11 @@ export default function ImageImportNode({
               e.stopPropagation()
               fileInputRef.current?.click()
             }}
+            onDoubleClick={(e) => {
+              e.stopPropagation()
+              openImageModal(data.imageUrl || '')
+            }}
+            title="더블클릭하여 크게 보기"
           />
         ) : (
           <div 

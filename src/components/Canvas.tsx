@@ -9,7 +9,9 @@ import ReactFlow, {
 } from 'reactflow'
 import {
   Banana,
+  Grid3x3,
   Image as ImageIcon,
+  Layers,
   MessageSquare,
   Sparkles,
   Wand2,
@@ -22,7 +24,12 @@ import TextPromptNode from './nodes/TextPromptNode'
 import MotionPromptNode from './nodes/MotionPromptNode'
 import GeminiVideoNode from './nodes/GeminiVideoNode'
 import KlingVideoNode from './nodes/KlingVideoNode'
+import GridNode from './nodes/GridNode'
+import CellRegeneratorNode from './nodes/CellRegeneratorNode'
+import GridComposerNode from './nodes/GridComposerNode'
+import LLMPromptNode from './nodes/LLMPromptNode'
 import NodeInspector from './NodeInspector'
+import { ImageModal } from './ImageModal'
 import KlingIcon from './icons/KlingIcon'
 
 const nodeTypes = {
@@ -32,6 +39,10 @@ const nodeTypes = {
   motionPrompt: MotionPromptNode,
   geminiVideo: GeminiVideoNode,
   klingVideo: KlingVideoNode,
+  gridNode: GridNode,
+  cellRegenerator: CellRegeneratorNode,
+  gridComposer: GridComposerNode,
+  llmPrompt: LLMPromptNode,
 }
 
 const toolbarItems: Array<{
@@ -46,6 +57,10 @@ const toolbarItems: Array<{
   { type: 'motionPrompt', label: 'Motion Prompt', key: '4', icon: Wand2 },
   { type: 'geminiVideo', label: 'Gemini Video', key: '5', icon: Sparkles },
   { type: 'klingVideo', label: 'Kling Video', key: '6', icon: KlingIcon },
+  { type: 'gridNode', label: 'Grid Node', key: '7', icon: Grid3x3 },
+  { type: 'cellRegenerator', label: 'Cell Regenerator', key: '8', icon: Sparkles },
+  { type: 'gridComposer', label: 'Grid Composer', key: '9', icon: Layers },
+  { type: 'llmPrompt', label: 'LLM Prompt', key: '0', icon: Sparkles },
 ]
 
 export default function Canvas() {
@@ -74,6 +89,14 @@ export default function Canvas() {
         return '#60a5fa' // blue-400
       case 'klingVideo':
         return '#4ade80' // green-400
+      case 'gridNode':
+        return '#a78bfa' // violet-400
+      case 'cellRegenerator':
+        return '#c084fc' // purple-400
+      case 'gridComposer':
+        return '#10b981' // emerald-500
+      case 'llmPrompt':
+        return '#f472b6' // pink-400
       default:
         return '#64748b' // slate-500
     }
@@ -235,6 +258,9 @@ export default function Canvas() {
 
       {/* Node Inspector Panel */}
       <NodeInspector />
+
+      {/* Image Modal */}
+      <ImageModal />
     </div>
   )
 }
