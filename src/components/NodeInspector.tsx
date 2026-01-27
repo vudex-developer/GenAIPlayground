@@ -230,6 +230,8 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
       updateNodeData(node.id, {
         imageUrl: url,
         imageDataUrl: dataUrl,
+        fileName: file.name,  // 파일 이름 저장
+        filePath: file.webkitRelativePath || file.name,  // 가능한 경로 정보 저장
         width: img.width,
         height: img.height,
       })
@@ -252,17 +254,26 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
         }}
       />
 
-      {data.imageUrl ? (
+      {data.imageDataUrl || data.imageUrl ? (
         <>
           <div>
             <div className="mb-2 text-sm font-medium text-slate-300">Preview</div>
             <div className="max-h-[600px] overflow-auto rounded-lg border border-white/10">
               <img
-                src={data.imageUrl}
+                src={data.imageDataUrl || data.imageUrl}
                 alt="Imported"
                 className="w-full"
+                onError={() => {
+                  // 이미지 로드 실패 시
+                  updateNodeData(node.id, { imageUrl: undefined })
+                }}
               />
             </div>
+            {data.fileName && (
+              <div className="mt-2 text-xs text-slate-400">
+                📎 {data.fileName}
+              </div>
+            )}
           </div>
           
           <div>
@@ -273,10 +284,26 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
           </div>
 
           <button
-            onClick={() => updateNodeData(node.id, { imageUrl: undefined, imageDataUrl: undefined, width: undefined, height: undefined })}
+            onClick={() => updateNodeData(node.id, { imageUrl: undefined, imageDataUrl: undefined, fileName: undefined, filePath: undefined, width: undefined, height: undefined })}
             className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400 transition hover:bg-red-500/20"
           >
             Remove Image
+          </button>
+        </>
+      ) : data.fileName ? (
+        <>
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-400">
+            ⚠️ 이미지가 자동 정리되었습니다
+            <div className="mt-1 text-xs text-yellow-400/80">
+              파일: {data.fileName}
+            </div>
+          </div>
+          
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
+          >
+            다시 업로드
           </button>
         </>
       ) : (

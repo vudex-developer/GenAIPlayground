@@ -26,6 +26,8 @@ export default function ImageImportNode({
         updateNodeData(id, {
           imageUrl: url,
           imageDataUrl: dataUrl,
+          fileName: file.name,  // 파일 이름 저장
+          filePath: file.webkitRelativePath || file.name,  // 가능한 경로 정보 저장
           width: img.width,
           height: img.height,
         })
@@ -61,21 +63,47 @@ export default function ImageImportNode({
           }}
           onClick={(e) => e.stopPropagation()}
         />
-        {data.imageUrl ? (
-          <img
-            src={data.imageUrl}
-            alt="Imported"
-            className="w-full rounded-md cursor-pointer hover:opacity-80 transition"
+        {data.imageDataUrl || data.imageUrl ? (
+          <div className="relative">
+            <img
+              src={data.imageDataUrl || data.imageUrl}
+              alt="Imported"
+              className="w-full rounded-md cursor-pointer hover:opacity-80 transition"
+              onClick={(e) => {
+                e.stopPropagation()
+                fileInputRef.current?.click()
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                openImageModal(data.imageDataUrl || data.imageUrl || '')
+              }}
+              onError={() => {
+                // 이미지 로드 실패 시 imageUrl 제거
+                updateNodeData(id, { imageUrl: undefined })
+              }}
+              title="더블클릭하여 크게 보기"
+            />
+            {data.fileName && (
+              <div className="mt-1 text-[9px] text-slate-500 truncate" title={data.fileName}>
+                📎 {data.fileName}
+              </div>
+            )}
+          </div>
+        ) : data.fileName ? (
+          // 이미지는 삭제되었지만 파일 이름이 남아있는 경우
+          <div 
+            className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-yellow-400/30 bg-[#222d3d] text-[10px] text-slate-400 cursor-pointer hover:border-yellow-400/50 hover:bg-[#2a3544] transition"
             onClick={(e) => {
               e.stopPropagation()
               fileInputRef.current?.click()
             }}
-            onDoubleClick={(e) => {
-              e.stopPropagation()
-              openImageModal(data.imageUrl || '')
-            }}
-            title="더블클릭하여 크게 보기"
-          />
+          >
+            <Upload className="h-5 w-5 text-yellow-400/60" />
+            <div className="font-medium text-yellow-400">이미지 다시 업로드</div>
+            <div className="text-[9px] text-slate-500 px-2 text-center truncate w-full">
+              {data.fileName}
+            </div>
+          </div>
         ) : (
           <div 
             className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-cyan-400/30 bg-[#222d3d] text-[10px] text-slate-400 cursor-pointer hover:border-cyan-400/50 hover:bg-[#2a3544] transition"

@@ -17,6 +17,8 @@ export type NodeStatus = 'idle' | 'processing' | 'completed' | 'error'
 export type ImageImportNodeData = {
   imageUrl?: string
   imageDataUrl?: string
+  filePath?: string  // 원본 파일 경로 저장
+  fileName?: string  // 파일 이름 저장
   width?: number
   height?: number
   referencePrompt?: string
