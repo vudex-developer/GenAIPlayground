@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
 import { Image as ImageIcon, Upload } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
-import { getImage } from '../../utils/indexedDB'
+import { getImage, saveImage } from '../../utils/indexedDB'
 import type { ImageImportNodeData } from '../../types/nodes'
 
 export default function ImageImportNode({
@@ -18,49 +18,80 @@ export default function ImageImportNode({
     data.imageDataUrl || data.imageUrl
   )
 
-  // 🔄 IndexedDB에서 이미지 복원
+  // 🔄 IndexedDB/S3에서 이미지 복원
   useEffect(() => {
     const loadImage = async () => {
-      // imageDataUrl이 idb: 참조인 경우
-      if (data.imageDataUrl && typeof data.imageDataUrl === 'string' && data.imageDataUrl.startsWith('idb:')) {
-        try {
-          const dataURL = await getImage(data.imageDataUrl)
-          if (dataURL) {
-            setDisplayImageUrl(dataURL)
-            // 실제 DataURL로 업데이트 (선택적)
-            updateNodeData(id, { 
-              imageDataUrl: dataURL,
-              imageUrl: dataURL 
-            })
+      // imageDataUrl이 idb: 또는 s3: 참조인 경우
+      if (data.imageDataUrl && typeof data.imageDataUrl === 'string') {
+        if (data.imageDataUrl.startsWith('idb:') || data.imageDataUrl.startsWith('s3:')) {
+          try {
+            console.log('🔄 Image Import: 이미지 로드 중...', data.imageDataUrl)
+            const dataURL = await getImage(data.imageDataUrl)
+            if (dataURL) {
+              console.log('✅ Image Import: 이미지 로드 성공')
+              setDisplayImageUrl(dataURL)
+            } else {
+              console.warn('⚠️ Image Import: 이미지 없음')
+              setDisplayImageUrl(undefined)
+            }
+          } catch (error) {
+            console.error('❌ Image Import: 이미지 복원 실패:', error)
+            setDisplayImageUrl(undefined)
           }
-        } catch (error) {
-          console.error('❌ 이미지 복원 실패:', error)
+        } else if (data.imageDataUrl.startsWith('data:')) {
+          // 이미 DataURL인 경우
+          setDisplayImageUrl(data.imageDataUrl)
         }
-      } else if (data.imageDataUrl || data.imageUrl) {
-        setDisplayImageUrl(data.imageDataUrl || data.imageUrl)
+      } else if (data.imageUrl) {
+        setDisplayImageUrl(data.imageUrl)
       }
     }
 
     loadImage()
-  }, [data.imageDataUrl, data.imageUrl, id, updateNodeData])
+  }, [data.imageDataUrl, data.imageUrl])
 
   const handleFileUpload = async (file: File) => {
     if (!file.type.startsWith('image/')) return
 
     const url = URL.createObjectURL(file)
     const reader = new FileReader()
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUrl = reader.result as string
       const img = new Image()
-      img.onload = () => {
-        updateNodeData(id, {
-          imageUrl: url,
-          imageDataUrl: dataUrl,
-          fileName: file.name,  // 파일 이름 저장
-          filePath: file.webkitRelativePath || file.name,  // 가능한 경로 정보 저장
-          width: img.width,
-          height: img.height,
-        })
+      img.onload = async () => {
+        try {
+          // 🔥 IndexedDB + S3에 이미지 저장
+          const imageId = `img-import-${Date.now()}-${Math.random().toString(36).substring(7)}`
+          console.log('💾 Image Import: IndexedDB/S3에 저장 시작...', imageId)
+          
+          const savedRef = await saveImage(imageId, dataUrl, id, true)
+          console.log('✅ Image Import: 저장 완료', savedRef)
+
+          // idb: 참조로 저장 (localStorage 용량 절약)
+          updateNodeData(id, {
+            imageUrl: url,
+            imageDataUrl: savedRef, // idb:abc-123 형태
+            fileName: file.name,
+            filePath: file.webkitRelativePath || file.name,
+            width: img.width,
+            height: img.height,
+          })
+
+          // 즉시 표시용 DataURL 설정
+          setDisplayImageUrl(dataUrl)
+        } catch (error) {
+          console.error('❌ Image Import: 저장 실패', error)
+          // 폴백: 직접 DataURL 저장 (비권장)
+          updateNodeData(id, {
+            imageUrl: url,
+            imageDataUrl: dataUrl,
+            fileName: file.name,
+            filePath: file.webkitRelativePath || file.name,
+            width: img.width,
+            height: img.height,
+          })
+          setDisplayImageUrl(dataUrl)
+        }
       }
       img.src = url
     }
@@ -109,12 +140,14 @@ export default function ImageImportNode({
               }}
               onError={() => {
                 // 이미지 로드 실패 시 재로드 시도
-                console.warn('⚠️ 이미지 로드 실패, IndexedDB에서 재시도...')
-                if (data.imageDataUrl?.startsWith('idb:')) {
+                console.warn('⚠️ Image Import: 이미지 로드 실패, IndexedDB/S3에서 재시도...')
+                if (data.imageDataUrl?.startsWith('idb:') || data.imageDataUrl?.startsWith('s3:')) {
                   getImage(data.imageDataUrl).then((dataURL) => {
                     if (dataURL) {
+                      console.log('✅ Image Import: 재시도 성공')
                       setDisplayImageUrl(dataURL)
                     } else {
+                      console.error('❌ Image Import: 재시도 실패')
                       setDisplayImageUrl(undefined)
                     }
                   })

@@ -1,15 +1,93 @@
-import { memo } from 'react'
+import { memo, useState, useEffect } from 'react'
 import { Handle, Position } from 'reactflow'
 import type { NodeProps } from 'reactflow'
 import { Grid3x3, CheckCircle2, AlertCircle, Layers } from 'lucide-react'
 import type { GridComposerNodeData } from '../../types/nodes'
 import { useFlowStore } from '../../stores/flowStore'
+import { getImage } from '../../utils/indexedDB'
 
 const GridComposerNode = ({ data, selected }: NodeProps<GridComposerNodeData>) => {
   const openImageModal = useFlowStore((state) => state.openImageModal)
   const hasGridInfo = !!data.gridLayout && !!data.slots
   const inputCount = Object.keys(data.inputImages).length
   const isComposed = !!data.composedImageUrl || !!data.composedImageDataUrl
+
+  // 🔄 합성된 이미지 로드
+  const [displayComposedImageUrl, setDisplayComposedImageUrl] = useState<string | undefined>(
+    data.composedImageUrl || data.composedImageDataUrl
+  )
+
+  // 🔄 Input Images 로드 (idb: 참조를 DataURL로 변환)
+  const [displayInputImages, setDisplayInputImages] = useState<{ [key: string]: string }>({})
+
+  useEffect(() => {
+    const loadComposedImage = async () => {
+      const imageRef = data.composedImageUrl || data.composedImageDataUrl
+      if (!imageRef) {
+        setDisplayComposedImageUrl(undefined)
+        return
+      }
+
+      // idb: 또는 s3: 참조인 경우
+      if (imageRef.startsWith('idb:') || imageRef.startsWith('s3:')) {
+        try {
+          console.log('🔄 Grid Composer: 합성 이미지 로드 중...', imageRef)
+          const dataURL = await getImage(imageRef)
+          if (dataURL) {
+            console.log('✅ Grid Composer: 합성 이미지 로드 성공')
+            setDisplayComposedImageUrl(dataURL)
+          } else {
+            console.warn('⚠️ Grid Composer: 합성 이미지 없음')
+            setDisplayComposedImageUrl(undefined)
+          }
+        } catch (error) {
+          console.error('❌ Grid Composer: 합성 이미지 로드 실패:', error)
+          setDisplayComposedImageUrl(undefined)
+        }
+      } else if (imageRef.startsWith('data:')) {
+        // 이미 DataURL인 경우
+        setDisplayComposedImageUrl(imageRef)
+      }
+    }
+
+    loadComposedImage()
+  }, [data.composedImageUrl, data.composedImageDataUrl])
+
+  // 🔄 Input Images 로드
+  useEffect(() => {
+    const loadInputImages = async () => {
+      if (!data.slots || inputCount === 0) {
+        setDisplayInputImages({})
+        return
+      }
+
+      const loadedImages: { [key: string]: string } = {}
+
+      for (const slot of data.slots) {
+        const imageRef = data.inputImages[slot.id]
+        if (!imageRef) continue
+
+        // idb: 또는 s3: 참조인 경우
+        if (imageRef.startsWith('idb:') || imageRef.startsWith('s3:')) {
+          try {
+            const dataURL = await getImage(imageRef)
+            if (dataURL) {
+              loadedImages[slot.id] = dataURL
+            }
+          } catch (error) {
+            console.error(`❌ Grid Composer Input 로드 실패 (${slot.id}):`, error)
+          }
+        } else if (imageRef.startsWith('data:') || imageRef.startsWith('http')) {
+          // 이미 DataURL이거나 HTTP URL인 경우
+          loadedImages[slot.id] = imageRef
+        }
+      }
+
+      setDisplayInputImages(loadedImages)
+    }
+
+    loadInputImages()
+  }, [data.inputImages, data.slots, inputCount])
 
   // Parse grid layout
   const [rows, cols] = data.gridLayout
@@ -72,28 +150,45 @@ const GridComposerNode = ({ data, selected }: NodeProps<GridComposerNodeData>) =
             }}
           >
             {data.slots?.map((slot) => {
-              const imageUrl = data.inputImages[slot.id]
+              const displayUrl = displayInputImages[slot.id]
+              const hasImage = !!data.inputImages[slot.id]
               return (
                 <div
                   key={slot.id}
-                  className="relative aspect-square overflow-hidden rounded border border-white/10 bg-slate-800"
+                  className="flex flex-col"
                 >
-                  {imageUrl ? (
-                    <>
+                  {/* 이미지 영역 */}
+                  <div className="relative aspect-square overflow-hidden rounded-t border border-white/10 bg-slate-800">
+                    {displayUrl ? (
                       <img
-                        src={imageUrl}
+                        src={displayUrl}
                         alt={slot.label}
                         className="h-full w-full object-cover"
+                        onError={(e) => {
+                          // 이미지 로드 실패 시 처리
+                          console.warn(`⚠️ Grid Composer Input: 이미지 표시 실패 (${slot.id})`)
+                          e.currentTarget.style.display = 'none'
+                        }}
                       />
-                      <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-[8px] text-white text-center">
-                        {slot.id}
+                    ) : hasImage ? (
+                      <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-400">
+                        Loading...
                       </div>
-                    </>
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-[8px] text-slate-600">
-                      {slot.id}
-                    </div>
-                  )}
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+                        Empty
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* 라벨 바 (이미지 아래) */}
+                  <div className={`rounded-b border-x border-b px-1.5 py-0.5 text-[9px] font-semibold text-center ${
+                    hasImage 
+                      ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-400' 
+                      : 'border-slate-700 bg-slate-800 text-slate-500'
+                  }`}>
+                    {slot.id}
+                  </div>
                 </div>
               )
             })}
@@ -107,16 +202,26 @@ const GridComposerNode = ({ data, selected }: NodeProps<GridComposerNodeData>) =
               ✨ Composed Grid
             </div>
             <div className="relative aspect-video overflow-hidden rounded border border-emerald-400/30 bg-slate-800 cursor-pointer hover:border-emerald-400/60 transition">
-              <img
-                src={data.composedImageUrl || data.composedImageDataUrl}
-                alt="Composed Grid"
-                className="h-full w-full object-contain"
-                onDoubleClick={(e) => {
-                  e.stopPropagation()
-                  openImageModal(data.composedImageUrl || data.composedImageDataUrl || '')
-                }}
-                title="더블클릭하여 크게 보기"
-              />
+              {displayComposedImageUrl ? (
+                <img
+                  src={displayComposedImageUrl}
+                  alt="Composed Grid"
+                  className="h-full w-full object-contain"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation()
+                    openImageModal(displayComposedImageUrl || '')
+                  }}
+                  onError={() => {
+                    console.warn('⚠️ Grid Composer: 합성 이미지 표시 실패')
+                    setDisplayComposedImageUrl(undefined)
+                  }}
+                  title="더블클릭하여 크게 보기"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+                  Loading...
+                </div>
+              )}
             </div>
           </div>
         )}

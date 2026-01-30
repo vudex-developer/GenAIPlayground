@@ -3,14 +3,22 @@ import {
   Film,
   Image as ImageIcon,
   TextCursorInput,
-  Wand2,
+  Camera,
+  Sparkles,
 } from 'lucide-react'
 import type { NodeType } from '../types/nodes'
+
+// Custom LLM text icon component
+const LLMIcon = ({ className }: { className?: string }) => (
+  <div className={`font-bold text-[10px] tracking-tight ${className}`}>
+    LLM
+  </div>
+)
 
 const paletteItems: Array<{
   type: NodeType
   label: string
-  icon: typeof ImageIcon
+  icon: typeof ImageIcon | typeof LLMIcon
   borderClass: string
   hoverBorderClass: string
   iconClass: string
@@ -42,10 +50,18 @@ const paletteItems: Array<{
   {
     type: 'motionPrompt',
     label: 'Motion Prompt',
-    icon: Wand2,
+    icon: Camera,
     borderClass: 'border-purple-200',
     hoverBorderClass: 'hover:border-purple-400',
     iconClass: 'text-purple-500',
+  },
+  {
+    type: 'llmPrompt',
+    label: 'LLM Prompt',
+    icon: LLMIcon,
+    borderClass: 'border-pink-200',
+    hoverBorderClass: 'hover:border-pink-400',
+    iconClass: 'text-pink-500',
   },
   {
     type: 'geminiVideo',
@@ -71,6 +87,7 @@ export default function NodePalette() {
       <div className="flex flex-col items-center gap-2">
         {paletteItems.map((item) => {
           const Icon = item.icon
+          const isLLMIcon = item.type === 'llmPrompt'
           return (
             <div
               key={item.type}
@@ -79,7 +96,11 @@ export default function NodePalette() {
               draggable
               onDragStart={(event) => handleDragStart(event, item.type)}
             >
-              <Icon className={`h-4 w-4 ${item.iconClass} dark:text-slate-200`} />
+              {isLLMIcon ? (
+                <Icon className={`${item.iconClass} dark:text-slate-200`} />
+              ) : (
+                <Icon className={`h-4 w-4 ${item.iconClass} dark:text-slate-200`} />
+              )}
             </div>
           )
         })}

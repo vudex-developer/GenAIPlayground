@@ -42,7 +42,9 @@ export default function TextPromptNode({
       <Handle
         type="source"
         position={Position.Right}
+        id="output"
         className="!h-4 !w-4 !bg-violet-500"
+        title="Prompt Output"
       />
     </div>
   )

@@ -1,5 +1,5 @@
 import { Handle, Position, type NodeProps } from 'reactflow'
-import { Wand2 } from 'lucide-react'
+import { Camera } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
 import type { MotionPromptNodeData } from '../../types/nodes'
 
@@ -19,7 +19,7 @@ export default function MotionPromptNode({
     >
       <div className="rounded-t-xl border-b border-fuchsia-400/20 bg-[#1c2431] px-3 py-2 text-[11px] font-semibold text-slate-100">
         <div className="flex items-center gap-2">
-          <Wand2 className="h-4 w-4 text-fuchsia-400" />
+          <Camera className="h-4 w-4 text-fuchsia-400" />
           Motion Prompt
         </div>
       </div>
@@ -38,12 +38,16 @@ export default function MotionPromptNode({
       <Handle
         type="target"
         position={Position.Left}
-        className="!h-3 !w-3 !bg-fuchsia-500"
+        id="basePrompt"
+        className="!h-3 !w-3 !bg-violet-400"
+        title="Base Prompt Input"
       />
       <Handle
         type="source"
         position={Position.Right}
+        id="output"
         className="!h-3 !w-3 !bg-fuchsia-500"
+        title="Motion Prompt Output"
       />
     </div>
   )

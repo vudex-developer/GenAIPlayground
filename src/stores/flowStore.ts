@@ -13,6 +13,7 @@ import { KlingAPIClient, MockKlingAPI } from '../services/klingAPI'
 import { retryWithBackoff } from '../utils/retry'
 import { getStorageInfo, prepareForStorage, getStorageWarning } from '../utils/storage'
 import { createBackup } from '../utils/backup'
+import { saveImage, getImage } from '../utils/indexedDB'
 import type {
   GeminiVideoNodeData,
   GridNodeData,
@@ -39,6 +40,7 @@ type FlowState = {
   selectedNodeId: string | null
   apiKey: string
   klingApiKey: string
+  openaiApiKey: string  // OpenAI API Key
   abortControllers: Map<string, AbortController>
   history: HistoryState[]
   historyIndex: number
@@ -46,6 +48,7 @@ type FlowState = {
   setSelectedNodeId: (id: string | null) => void
   setApiKey: (key: string) => void
   setKlingApiKey: (key: string) => void
+  setOpenaiApiKey: (key: string) => void  // OpenAI API Key Setter
   openImageModal: (imageUrl: string) => void
   closeImageModal: () => void
   onNodesChange: (changes: NodeChange[]) => void
@@ -154,6 +157,7 @@ const isConnectionAllowed = (sourceType: NodeType, targetType: NodeType) => {
   if (sourceType === 'gridComposer' && targetType === 'klingVideo') return true
   // LLM Prompt connections
   if (sourceType === 'textPrompt' && targetType === 'llmPrompt') return true
+  if (sourceType === 'motionPrompt' && targetType === 'llmPrompt') return true
   if (sourceType === 'imageImport' && targetType === 'llmPrompt') return true
   if (sourceType === 'nanoImage' && targetType === 'llmPrompt') return true
   if (sourceType === 'gridComposer' && targetType === 'llmPrompt') return true
@@ -379,8 +383,10 @@ export const useFlowStore = create<FlowState>()(
       nodes: [],
       edges: [],
       selectedNodeId: null,
-      apiKey: '',
-      klingApiKey: '',
+      // .env 파일에서 API 키 자동 로드
+      apiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
+      klingApiKey: import.meta.env.VITE_KLING_API_KEY || '',
+      openaiApiKey: import.meta.env.VITE_OPENAI_API_KEY || '',  // OpenAI API Key
       abortControllers: new Map(),
       history: [],
       historyIndex: -1,
@@ -388,6 +394,7 @@ export const useFlowStore = create<FlowState>()(
       setSelectedNodeId: (id) => set({ selectedNodeId: id }),
       setApiKey: (key) => set({ apiKey: key }),
       setKlingApiKey: (key) => set({ klingApiKey: key }),
+      setOpenaiApiKey: (key) => set({ openaiApiKey: key }),  // OpenAI API Key Setter
       openImageModal: (imageUrl) => set({ imageModal: { isOpen: true, imageUrl } }),
       closeImageModal: () => set({ imageModal: { isOpen: false, imageUrl: null } }),
   onNodesChange: (changes) => {
@@ -825,7 +832,22 @@ export const useFlowStore = create<FlowState>()(
           }
           
           if (imageDataUrl) {
-            referenceImages.push(imageDataUrl)
+            // 🔥 Convert idb: or s3: reference to actual DataURL
+            if (imageDataUrl.startsWith('idb:') || imageDataUrl.startsWith('s3:')) {
+              try {
+                const actualDataUrl = await getImage(imageDataUrl)
+                if (actualDataUrl) {
+                  referenceImages.push(actualDataUrl)
+                } else {
+                  console.warn(`⚠️ Failed to load reference image: ${imageDataUrl}`)
+                }
+              } catch (error) {
+                console.error(`❌ Error loading reference image: ${imageDataUrl}`, error)
+              }
+            } else {
+              referenceImages.push(imageDataUrl)
+            }
+            
             if (refPrompt) {
               referencePrompts.push(`Reference ${i}: ${refPrompt}`)
             }
@@ -864,7 +886,22 @@ export const useFlowStore = create<FlowState>()(
           : undefined
       
       if (inputImageDataUrl) {
-        referenceImages.push(inputImageDataUrl)
+        // 🔥 Convert idb: or s3: reference to actual DataURL
+        if (inputImageDataUrl.startsWith('idb:') || inputImageDataUrl.startsWith('s3:')) {
+          try {
+            const actualDataUrl = await getImage(inputImageDataUrl)
+            if (actualDataUrl) {
+              referenceImages.push(actualDataUrl)
+            } else {
+              console.warn(`⚠️ Failed to load fallback reference image: ${inputImageDataUrl}`)
+            }
+          } catch (error) {
+            console.error(`❌ Error loading fallback reference image: ${inputImageDataUrl}`, error)
+          }
+        } else {
+          referenceImages.push(inputImageDataUrl)
+        }
+        
         if (referencePrompt) {
           referencePrompts.push(`Reference 1: ${referencePrompt}`)
         }
@@ -906,10 +943,235 @@ export const useFlowStore = create<FlowState>()(
         throw new Error('작업이 취소되었습니다.')
       }
 
+      // Check if Grid Composer + LLM Prompt are connected
+      const gridComposerEdge = edges.find(e => e.target === id && get().nodes.find(n => n.id === e.source)?.type === 'gridComposer')
+      const gridComposerNode = gridComposerEdge ? get().nodes.find(n => n.id === gridComposerEdge.source) : null
+      const hasGridComposerRef = referenceImages.length > 0 && !!gridComposerEdge
+      
+      const llmPromptEdge = edges.find(e => 
+        e.target === id && 
+        e.targetHandle === 'prompt' && 
+        get().nodes.find(n => n.id === e.source)?.type === 'llmPrompt'
+      )
+      const llmPromptNode = llmPromptEdge ? get().nodes.find(n => n.id === llmPromptEdge.source) : null
+      const hasLLMPrompt = !!llmPromptNode
+      
+      // Get reference mode from LLM Prompt Helper
+      const referenceMode = (llmPromptNode?.data as any)?.referenceMode || 'exact'
+      
+      // Extract Grid Composer label info (for Nano Banana)
+      let gridLabelInfoForNano = ''
+      if (gridComposerNode && gridComposerNode.type === 'gridComposer') {
+        const gridData = gridComposerNode.data as any
+        if (gridData.inputImages && gridData.slots) {
+          const layout = gridData.gridLayout || '1x3'
+          const slots = gridData.slots as Array<{ id: string; label: string; metadata?: string }>
+          
+          const slotDescriptions = slots
+            .filter(slot => gridData.inputImages[slot.id])
+            .map((slot, index) => {
+              const position = ['첫 번째', '두 번째', '세 번째', '네 번째', '다섯 번째', '여섯 번째'][index] || `${index + 1}번째`
+              let description = `- ${position} 참고 요소 (${slot.id}): ${slot.label}`
+              if (slot.metadata && slot.metadata.trim()) {
+                description += ` - ${slot.metadata}`
+              }
+              return description
+            })
+            .join('\n')
+          
+          if (slotDescriptions) {
+            gridLabelInfoForNano = `\n\n📋 참고 이미지 구성 (${layout} 그리드):\n${slotDescriptions}\n\n`
+          }
+        }
+      }
+      
+      // Check if Motion Prompt is connected (for camera transformation)
+      const motionPromptEdge = edges.find(e => 
+        e.target === id && 
+        e.targetHandle === 'prompt' && 
+        get().nodes.find(n => n.id === e.source)?.type === 'motionPrompt'
+      )
+      const motionPromptNode = motionPromptEdge ? get().nodes.find(n => n.id === motionPromptEdge.source) : null
+      const hasMotionPrompt = !!motionPromptNode
+      
       // Add reference prompts to main prompt if available
-      const enhancedPrompt = referencePrompts.length > 0
+      let enhancedPrompt = referencePrompts.length > 0
         ? `${prompt}\n\n${referencePrompts.join('\n')}`
         : prompt
+      
+      // 🎥 Motion Prompt + Reference Image: Force camera transformation
+      if (hasMotionPrompt && referenceImages.length > 0) {
+        const motionData = motionPromptNode?.data as MotionPromptNodeData
+        const hasCameraMovement = 
+          (motionData.cameraRotation && motionData.cameraRotation !== 0) ||
+          (motionData.cameraTilt && motionData.cameraTilt !== 0) ||
+          (motionData.cameraDistance && motionData.cameraDistance !== 1.0)
+        
+        if (hasCameraMovement) {
+          // Check if 90-degree rotation is specified
+          const has90DegreeRotation = Math.abs(motionData.cameraRotation || 0) === 90
+          const rotationDirection = (motionData.cameraRotation || 0) > 0 ? 'right' : 'left'
+          const visibleSide = (motionData.cameraRotation || 0) > 0 ? 'LEFT' : 'RIGHT'
+          
+          let specialRotationNote = ''
+          if (has90DegreeRotation) {
+            specialRotationNote = `
+
+🚨 CRITICAL 90-DEGREE SIDE VIEW INSTRUCTION:
+The prompt specifies "rotate ${rotationDirection} 90°" - this is a PERPENDICULAR side view!
+
+MANDATORY REQUIREMENTS for 90° rotation:
+✅ Camera positioned at COMPLETE 90-degree angle (perpendicular to subject)
+✅ Subject facing PERPENDICULAR to camera (left-to-right across frame)
+✅ ONLY ${visibleSide} side profile visible (complete side view)
+✅ NO frontal face visible - pure lateral perspective
+✅ Subject appears in profile, oriented across the frame horizontally
+✅ This is NOT a frontal or three-quarter view - it's a FULL SIDE VIEW
+
+🚫 ABSOLUTELY FORBIDDEN at 90°:
+❌ Showing any frontal face
+❌ Any three-quarter or angled view
+❌ Subject facing toward camera
+❌ Any frontal perspective elements
+
+90° means PERPENDICULAR - imagine looking at subject from directly their ${rotationDirection} side.`
+          }
+          
+          enhancedPrompt = `🎬 CRITICAL: CAMERA TRANSFORMATION WITH CHARACTER CONSISTENCY 🎬${specialRotationNote}
+
+⚠️ MANDATORY INSTRUCTIONS (PRIORITY ORDER):
+
+1️⃣ HIGHEST PRIORITY - CHARACTER/STYLE CONSISTENCY (from reference image):
+   ✅ MUST PRESERVE EXACTLY:
+   - Character facial features, hair, eye color, skin tone
+   - Character clothing, outfit design, colors, materials
+   - Character body proportions, build, posture style
+   - Lighting quality, color palette, tone, mood
+   - Visual style, textures, rendering quality
+   - Background architectural elements, props, environment
+   
+   🚫 ABSOLUTELY FORBIDDEN:
+   - Changing character appearance (face, hair, body)
+   - Changing outfit design, colors, or materials
+   - Changing color palette or visual tone
+   - Altering character identity or features
+
+2️⃣ SECOND PRIORITY - CAMERA TRANSFORMATION (from prompt):
+   📷 REQUIRED CAMERA CHANGES:
+   ${prompt}
+   
+   ✅ YOU MUST:
+   - Apply the specified camera angle/rotation
+   - Apply the specified camera tilt (high/low angle)
+   - Apply the specified camera distance/zoom
+   - Change viewpoint perspective from reference
+   
+   🚨 SPECIAL: If "rotate right/left 90°" is specified:
+   - This means PERPENDICULAR side view (NOT frontal!)
+   - Camera positioned at 90-degree angle to subject
+   - Subject faces PERPENDICULAR to camera (left-to-right across frame)
+   - ONLY one side profile visible, NO frontal face
+   - Complete lateral/side perspective
+   
+   🚫 DO NOT:
+   - Keep the same camera angle as reference
+   - Ignore camera transformation instructions
+   - Show frontal face when 90° is specified
+
+🎯 EXECUTION STRATEGY:
+Step 1: Extract visual identity from reference (character, style, colors)
+Step 2: Apply camera transformation to that exact character/scene
+Step 3: Verify character consistency is maintained
+
+💡 ANALOGY: You're photographing the SAME character from a DIFFERENT angle.
+- The character stays IDENTICAL
+- Only the camera moves to a new position
+
+✨ FINAL CHECK:
+- Does the character look EXACTLY like the reference? ✓
+- Is the camera angle DIFFERENT from reference? ✓
+- Both must be TRUE for success!
+
+Generate the image maintaining PERFECT character consistency while applying the EXACT camera transformation specified above.`
+        }
+      }
+      
+      // 🎯 Grid Composer + LLM: 참조 정확도에 따라 지시 추가
+      else if (hasGridComposerRef && hasLLMPrompt) {
+        if (referenceMode === 'exact') {
+          // 정확성 모드: 참조 이미지 PIXEL-LEVEL 복제
+          enhancedPrompt = `⚠️⚠️⚠️ CRITICAL: EXACT REFERENCE IMAGE REPLICATION REQUIRED ⚠️⚠️⚠️
+${gridLabelInfoForNano}
+STRICT MODE: Reference image is ABSOLUTE PRIMARY source.
+Text prompt = ONLY for understanding story/actions. Your task = PIXEL-PERFECT VISUAL COPY.
+
+📌 TEXT PROMPT = STORY/ACTIONS (PRESERVE 100%):
+- If text says "holding helmet" → Generate "holding helmet" (NOT "wearing helmet"!)
+- If text says "walking" → Generate "walking" (keep action!)
+- If text says "one person" → Generate "one person" (NOT "two"!)
+- Preserve ALL actions, character counts, story elements from text prompt
+
+🎨 REFERENCE IMAGE = VISUAL DESIGN (REPLICATE 100%):
+- S1 Background: Copy EXACT colors, lighting, structure, materials
+- S2 Character: Copy EXACT appearance, outfit, hair, facial features
+- S3 Object/Robot: Copy EXACT colors (red=red, white=white), shape, design
+- Use reference for HOW things LOOK, use text for WHAT is HAPPENING
+
+🚫 ABSOLUTELY FORBIDDEN:
+- Changing actions ("holding" → "wearing", "walking" → "standing")
+- Changing character count ("one" → "two")
+- Reinterpreting background (S1 must match EXACTLY!)
+- ANY color changes (red→red, blue→blue, white→white, black→black)
+- ANY material changes (metal→metal, fabric→fabric, plastic→plastic)
+- ANY shape, proportion, design modifications
+- ANY creative variations or "similar" versions
+- ANY artistic interpretation of reference visuals
+
+✅ MANDATORY REQUIREMENTS:
+- EXACT pixel-by-pixel visual replication of S1, S2, S3 elements
+- 100% color preservation (use exact RGB values from reference)
+- 100% material/texture preservation from reference
+- 100% lighting/shadow preservation from reference
+- 100% action/story preservation from text prompt
+- If text says "holding helmet", person MUST be holding (not wearing) helmet
+- Background MUST match S1 reference exactly
+- Reference visuals = TOP PRIORITY for appearance
+- Text prompt = TOP PRIORITY for actions/story
+
+Extract visual characteristics from each labeled section and replicate EXACTLY. Use text prompt ONLY for understanding actions and story flow.
+
+---
+
+${enhancedPrompt}`
+        } else if (referenceMode === 'balanced') {
+          // 균형 모드: 텍스트와 이미지 균형
+          enhancedPrompt = `⚖️ BALANCED MODE: Reference Image + Text Prompt
+${gridLabelInfoForNano}
+Use reference image AND text prompt equally:
+- Reference image: Visual style, colors, materials, composition of each labeled element
+- Text prompt: Specific details, arrangement, actions, story
+
+⚠️ IMPORTANT: Preserve actions from text prompt (e.g., "holding" stays "holding", not "wearing").
+
+Maintain visual consistency with reference while incorporating text details.
+
+---
+
+${enhancedPrompt}`
+        } else if (referenceMode === 'creative') {
+          // 창의성 모드: 텍스트 위주, 이미지는 영감만
+          enhancedPrompt = `🎨 CREATIVE MODE: Text Prompt Primary
+${gridLabelInfoForNano}
+Focus on text prompt as main instruction.
+Reference image = INSPIRATION ONLY (style, mood, general aesthetic).
+
+Feel free to creatively interpret and generate based on text description.
+
+---
+
+${enhancedPrompt}`
+        }
+      }
       
       const model = data.model ?? 'gemini-3-pro-image-preview'
       
@@ -918,6 +1180,7 @@ export const useFlowStore = create<FlowState>()(
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
         referenceCount: referenceImages.length,
+        referenceMode: hasGridComposerRef ? referenceMode : 'N/A',
       })
       
       // Use first reference image as primary input (for backward compatibility)
@@ -951,11 +1214,24 @@ export const useFlowStore = create<FlowState>()(
         throw new Error('작업이 취소되었습니다.')
       }
 
+      // 🔥 IndexedDB/S3에 이미지 저장하고 참조 반환
+      let savedImageRef = result.imageDataUrl
+      try {
+        const imageId = `nano-output-${id}-${Date.now()}`
+        console.log('💾 Nano Image: IndexedDB/S3에 출력 이미지 저장 시작...', imageId)
+        
+        savedImageRef = await saveImage(imageId, result.imageDataUrl, id, true)
+        console.log('✅ Nano Image: 출력 이미지 저장 완료', savedImageRef)
+      } catch (error) {
+        console.error('❌ Nano Image: 출력 이미지 저장 실패, DataURL을 직접 사용', error)
+        // 폴백: DataURL을 직접 사용 (비권장)
+      }
+
       updateNode((prev) => ({
         ...prev,
         status: 'completed',
         outputImageUrl: result.imageUrl,
-        outputImageDataUrl: result.imageDataUrl,
+        outputImageDataUrl: savedImageRef, // idb:xxx 또는 s3:xxx 참조
         generatedModel: model,
         generatedResolution: data.resolution,
         generatedAspectRatio: data.aspectRatio,
@@ -1073,11 +1349,30 @@ export const useFlowStore = create<FlowState>()(
             ? (promptNode.data as any).outputPrompt || ''
             : ''
 
-    if (!inputImageUrl || !inputPrompt) {
+    // ⚠️ Early validation BEFORE storage conversion (only check if nodes are connected)
+    if (!inputPrompt) {
       updateNode((prev) => ({
         ...prev,
         status: 'error',
-        error: '이미지와 프롬프트를 모두 연결해 주세요.',
+        error: '프롬프트 노드를 연결해 주세요.',
+      }))
+      return
+    }
+    
+    if (!imageNode) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: '이미지 노드를 연결해 주세요.',
+      }))
+      return
+    }
+    
+    if (!inputImageDataUrl) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: '이미지 노드가 연결되었지만 이미지가 생성되지 않았습니다. 이미지 노드에서 "Generate" 버튼을 눌러주세요.',
       }))
       return
     }
@@ -1105,6 +1400,69 @@ export const useFlowStore = create<FlowState>()(
     }))
 
     const client = new GeminiAPIClient(apiKey)
+    
+    // ✅ Convert storage references to actual DataURLs
+    let actualInputImageDataUrl = inputImageDataUrl
+    
+    console.log('🔍 Gemini: Input image type:', inputImageDataUrl?.substring(0, 50))
+    
+    if (inputImageDataUrl && (inputImageDataUrl.startsWith('idb:') || inputImageDataUrl.startsWith('s3:'))) {
+      console.log('🔄 Gemini: Converting image from storage reference...')
+      try {
+        const { getImage } = await import('../utils/indexedDB')
+        const dataURL = await getImage(inputImageDataUrl)
+        if (dataURL) {
+          actualInputImageDataUrl = dataURL
+          console.log('✅ Gemini: Image loaded from storage, size:', dataURL.length, 'chars')
+        } else {
+          console.error('❌ Gemini: Failed to load image from storage')
+          updateNode((prev) => ({
+            ...prev,
+            status: 'error',
+            error: '이미지를 Storage에서 로드할 수 없습니다.',
+          }))
+          return
+        }
+      } catch (error) {
+        console.error('❌ Gemini: Error loading image:', error)
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: `이미지 로드 실패: ${error}`,
+        }))
+        return
+      }
+    } else if (!inputImageDataUrl) {
+      console.error('❌ Gemini: No input image provided!')
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: '입력 이미지가 제공되지 않았습니다.',
+      }))
+      return
+    } else {
+      console.log('✅ Gemini: Using direct DataURL (not a storage reference)')
+    }
+    
+    console.log('🎬 Gemini Video 생성 시작:', {
+      prompt: inputPrompt.substring(0, 50) + '...',
+      model: (current.data as GeminiVideoNodeData).model,
+      imageType: actualInputImageDataUrl?.substring(0, 30),
+      imageSize: actualInputImageDataUrl?.length,
+    })
+    
+    // ✅ Final validation before API call
+    if (!actualInputImageDataUrl || actualInputImageDataUrl.startsWith('idb:') || actualInputImageDataUrl.startsWith('s3:')) {
+      console.error('❌ Gemini: Image is still a storage reference or empty!', actualInputImageDataUrl?.substring(0, 50))
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: '이미지 변환 실패. Storage 참조가 남아있습니다.',
+      }))
+      return
+    }
+    
+    console.log('✅ Gemini: All validations passed, calling API...')
 
     const progressTimer = setInterval(() => {
       updateNode((prev) => {
@@ -1134,7 +1492,7 @@ export const useFlowStore = create<FlowState>()(
             quality: settings.quality,
             motionIntensity: settings.motionIntensity,
           },
-          inputImageDataUrl,
+          actualInputImageDataUrl,
           settings.model,
           abortController.signal,
         ),
@@ -1294,11 +1652,21 @@ export const useFlowStore = create<FlowState>()(
             ? (promptNode.data as any).outputPrompt || ''
             : ''
 
-    if (!inputImageUrl || !inputImageDataUrl || !inputPrompt) {
+    // ⚠️ Early validation BEFORE storage conversion (only check if nodes are connected)
+    if (!inputPrompt) {
       updateNode((prev) => ({
         ...prev,
         status: 'error',
-        error: 'Start Image와 프롬프트를 모두 연결해 주세요.',
+        error: '프롬프트 노드를 연결해 주세요.',
+      }))
+      return
+    }
+    
+    if (!inputImageDataUrl) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Start Image 노드를 연결해 주세요.',
       }))
       return
     }
@@ -1319,11 +1687,93 @@ export const useFlowStore = create<FlowState>()(
     const klingApiKey = get().klingApiKey || import.meta.env.VITE_KLING_API_KEY || ''
     const client = klingApiKey ? new KlingAPIClient(klingApiKey) : new MockKlingAPI()
 
+    // ✅ Convert storage references to actual DataURLs
+    let actualStartImageDataUrl = inputImageDataUrl
+    let actualEndImageDataUrl = endImageDataUrl
+    
+    console.log('🔍 Kling: Input start image type:', inputImageDataUrl?.substring(0, 50))
+    
+    // Convert start image if it's a storage reference
+    if (inputImageDataUrl && (inputImageDataUrl.startsWith('idb:') || inputImageDataUrl.startsWith('s3:'))) {
+      console.log('🔄 Kling: Converting start image from storage reference...')
+      try {
+        const { getImage } = await import('../utils/indexedDB')
+        const dataURL = await getImage(inputImageDataUrl)
+        if (dataURL) {
+          actualStartImageDataUrl = dataURL
+          console.log('✅ Kling: Start image loaded from storage, size:', dataURL.length, 'chars')
+          console.log('✅ Kling: Start image type:', dataURL.substring(0, 50))
+        } else {
+          console.error('❌ Kling: Failed to load start image from storage (returned null/undefined)')
+          updateNode((prev) => ({
+            ...prev,
+            status: 'error',
+            error: 'Start 이미지를 Storage에서 로드할 수 없습니다. 이미지를 다시 생성해주세요.',
+          }))
+          return
+        }
+      } catch (error) {
+        console.error('❌ Kling: Error loading start image:', error)
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: `Start 이미지 로드 실패: ${error}`,
+        }))
+        return
+      }
+    } else if (!inputImageDataUrl) {
+      console.error('❌ Kling: No start image provided!')
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Start 이미지가 제공되지 않았습니다.',
+      }))
+      return
+    } else {
+      console.log('✅ Kling: Using direct DataURL (not a storage reference)')
+    }
+    
+    // Convert end image if it's a storage reference
+    if (endImageDataUrl && (endImageDataUrl.startsWith('idb:') || endImageDataUrl.startsWith('s3:'))) {
+      console.log('🔄 Kling: Converting end image from storage reference...')
+      try {
+        const { getImage } = await import('../utils/indexedDB')
+        const dataURL = await getImage(endImageDataUrl)
+        if (dataURL) {
+          actualEndImageDataUrl = dataURL
+          console.log('✅ Kling: End image loaded from storage, size:', dataURL.length, 'chars')
+        } else {
+          console.warn('⚠️ Kling: Failed to load end image from storage (returned null/undefined)')
+          actualEndImageDataUrl = undefined
+        }
+      } catch (error) {
+        console.error('❌ Kling: Error loading end image:', error)
+        actualEndImageDataUrl = undefined
+      }
+    }
+
     console.log('🎬 Kling Video 생성 시작:', {
       useMock: !klingApiKey,
-      prompt: inputPrompt,
+      prompt: inputPrompt.substring(0, 50) + '...',
       model: (current.data as KlingVideoNodeData).model,
+      startImageType: actualStartImageDataUrl?.substring(0, 30),
+      startImageSize: actualStartImageDataUrl?.length,
+      hasEndImage: !!actualEndImageDataUrl,
+      endImageType: actualEndImageDataUrl ? actualEndImageDataUrl.substring(0, 30) : 'none',
     })
+    
+    // ✅ Final validation before API call
+    if (!actualStartImageDataUrl || actualStartImageDataUrl.startsWith('idb:') || actualStartImageDataUrl.startsWith('s3:')) {
+      console.error('❌ Kling: Start image is still a storage reference or empty!', actualStartImageDataUrl?.substring(0, 50))
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Start 이미지 변환 실패. Storage 참조가 남아있습니다.',
+      }))
+      return
+    }
+    
+    console.log('✅ Kling: All validations passed, calling API...')
 
     const progressTimer = setInterval(() => {
       updateNode((prev) => {
@@ -1355,12 +1805,12 @@ export const useFlowStore = create<FlowState>()(
       const outputVideoUrl = await retryWithBackoff(
         () => client.generateVideo(
           inputPrompt,
-          inputImageDataUrl,
+          actualStartImageDataUrl,
           {
             duration: settings.duration,
             aspectRatio: settings.aspectRatio,
             model: settings.model,
-            endImageDataUrl: endImageDataUrl,
+            endImageDataUrl: actualEndImageDataUrl,
             cameraControl: cameraControl,
           },
         ),
@@ -1640,22 +2090,56 @@ export const useFlowStore = create<FlowState>()(
       })
     }
 
-    // Get input prompt from connected node or use internal input
+    // Get input prompt from connected nodes or use internal input
     let inputPrompt = data.inputPrompt
     
     const incoming = getIncomingNodes(id, edges, get().nodes)
     
-    // Check for prompt connection
-    const promptEdge = edges.find((e) => e.target === id && e.targetHandle === 'prompt')
-    if (promptEdge) {
-      const promptNode = get().nodes.find((n) => n.id === promptEdge.source)
+    // Check for base prompt connection (보라색 핸들)
+    const basePromptEdge = edges.find((e) => e.target === id && e.targetHandle === 'basePrompt')
+    let basePromptText = ''
+    if (basePromptEdge) {
+      const promptNode = get().nodes.find((n) => n.id === basePromptEdge.source)
       if (promptNode?.type === 'textPrompt') {
-        inputPrompt = (promptNode.data as any).prompt || inputPrompt
+        basePromptText = (promptNode.data as TextPromptNodeData).prompt || ''
+      }
+    }
+    
+    // Check for motion prompt connection (분홍색 핸들)
+    const motionPromptEdge = edges.find((e) => e.target === id && e.targetHandle === 'motionPrompt')
+    let motionPromptText = ''
+    if (motionPromptEdge) {
+      const motionNode = get().nodes.find((n) => n.id === motionPromptEdge.source)
+      if (motionNode?.type === 'motionPrompt') {
+        motionPromptText = (motionNode.data as MotionPromptNodeData).combinedPrompt || ''
+      }
+    }
+    
+    // Combine base and motion prompts if both are present
+    if (basePromptText && motionPromptText) {
+      inputPrompt = `${basePromptText}\n\n${motionPromptText}`
+    } else if (basePromptText) {
+      inputPrompt = basePromptText
+    } else if (motionPromptText) {
+      inputPrompt = motionPromptText
+    }
+    
+    // Fallback: Check for old 'prompt' handle for backward compatibility
+    if (!inputPrompt) {
+      const promptEdge = edges.find((e) => e.target === id && e.targetHandle === 'prompt')
+      if (promptEdge) {
+        const promptNode = get().nodes.find((n) => n.id === promptEdge.source)
+        if (promptNode?.type === 'textPrompt') {
+          inputPrompt = (promptNode.data as any).prompt || inputPrompt
+        } else if (promptNode?.type === 'motionPrompt') {
+          inputPrompt = (promptNode.data as any).combinedPrompt || inputPrompt
+        }
       }
     }
     
     // Check for image connection
     let referenceImageDataUrl: string | undefined
+    let gridLabelInfo: string | undefined  // Grid Composer 라벨 정보
     const imageEdge = edges.find((e) => e.target === id && e.targetHandle === 'image')
     if (imageEdge) {
       const imageNode = get().nodes.find((n) => n.id === imageEdge.source)
@@ -1666,7 +2150,32 @@ export const useFlowStore = create<FlowState>()(
         const nanoData = imageNode.data as any
         referenceImageDataUrl = nanoData.outputImageDataUrl || nanoData.outputImageUrl
       } else if (imageNode?.type === 'gridComposer') {
-        referenceImageDataUrl = (imageNode.data as any).composedImageDataUrl || (imageNode.data as any).composedImageUrl
+        const gridData = imageNode.data as any
+        referenceImageDataUrl = gridData.composedImageDataUrl || gridData.composedImageUrl
+        
+        // Extract grid layout and slot information
+        if (gridData.inputImages && gridData.slots) {
+          const layout = gridData.gridLayout || '1x3'
+          const slots = gridData.slots as Array<{ id: string; label: string; metadata?: string }>
+          
+          // Build structured label description (like multi-reference format)
+          const slotDescriptions = slots
+            .filter(slot => gridData.inputImages[slot.id])  // Only slots with images
+            .map((slot, index) => {
+              const position = ['첫 번째', '두 번째', '세 번째', '네 번째', '다섯 번째', '여섯 번째'][index] || `${index + 1}번째`
+              let description = `- ${position} 참고 이미지 (${slot.id}): ${slot.label}`
+              if (slot.metadata && slot.metadata.trim()) {
+                description += ` - ${slot.metadata}`
+              }
+              return description
+            })
+            .join('\n')
+          
+          if (slotDescriptions) {
+            gridLabelInfo = `참고 이미지는 ${layout} 그리드 구성입니다:\n\n${slotDescriptions}\n\n각 라벨의 시각적 요소를 정확히 추출하여 하나의 통합된 장면으로 조합하세요.`
+            console.log('📋 Grid 라벨 정보:', gridLabelInfo)
+          }
+        }
       }
       
       // Update node with reference image
@@ -1715,15 +2224,30 @@ export const useFlowStore = create<FlowState>()(
       error: undefined,
     }))
 
-    const apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
+    // Provider에 따라 API 키 확인
+    const provider = data.provider || 'gemini'
+    let apiKey = ''
     
-    if (!apiKey) {
-      updateNode((prev) => ({
-        ...prev,
-        status: 'error',
-        error: 'Gemini API Key가 필요합니다.',
-      }))
-      return
+    if (provider === 'gemini') {
+      apiKey = get().apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
+      if (!apiKey) {
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: 'Gemini API Key가 필요합니다.',
+        }))
+        return
+      }
+    } else if (provider === 'openai') {
+      apiKey = get().openaiApiKey || import.meta.env.VITE_OPENAI_API_KEY || ''
+      if (!apiKey) {
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: 'OpenAI API Key가 필요합니다.',
+        }))
+        return
+      }
     }
 
     try {
@@ -1732,47 +2256,331 @@ export const useFlowStore = create<FlowState>()(
       
       if (data.mode === 'expand') {
         systemInstruction = `You are a professional prompt engineer. Your task is to expand the given simple idea into a detailed, effective prompt for AI ${data.targetUse} generation.`
+        if (referenceImageDataUrl) {
+          systemInstruction += ` IMPORTANT: Use the reference image to extract visual details (colors, style, composition, lighting, subjects). Incorporate these visual elements into the expanded prompt to maintain consistency with the reference.`
+          
+          // 🎯 Grid Composer 라벨 참조 명령 (referenceMode에 따라)
+          if (gridLabelInfo) {
+            const refMode = data.referenceMode || 'exact'
+            if (refMode === 'exact') {
+              systemInstruction += ` CRITICAL GRID LABELS - EXACT MODE: The reference image contains labeled sections (S1, S2, S3, etc.) visible as text overlays. Each label shows VISUAL DESIGN ELEMENTS ONLY (colors, materials, designs, forms, lighting). 
+              
+              CRITICAL RULES - MUST FOLLOW:
+              
+              1. TEXT PROMPT = ABSOLUTE LAW (NEVER CHANGE ANYTHING!)
+                 - Character count: "한 명" = ONE person (NEVER change!)
+                 - Actions: "헬멧을 들고" = holding helmet (NEVER change to "wearing"!)
+                 - Story: Keep EXACTLY as written in text prompt
+                 - Composition: Keep EXACTLY as written in text prompt
+              
+              2. REFERENCE IMAGE = VISUAL DETAILS ONLY (EXTRACT & DESCRIBE!)
+                 - S1, S2, S3 labels = Visual design elements ONLY
+                 - Extract: Colors, materials, lighting, textures, design patterns
+                 - DO NOT change story, actions, or character count based on reference
+              
+              3. YOUR TASK:
+                 - Take text prompt AS-IS (word-for-word preservation!)
+                 - Add visual details FROM reference (colors, materials, designs)
+                 - Result = Same story + Enhanced visual description
+              
+              FORBIDDEN CHANGES:
+              ❌ Changing actions (e.g., "holding" → "wearing")
+              ❌ Changing character count (e.g., "one" → "two")
+              ❌ Reinterpreting story structure
+              ❌ Adding/removing story elements
+              
+              EXAMPLE:
+              Text: "한 명의 여자가 헬멧을 들고 걷는다" (one woman walking, holding helmet)
+              Reference S2: Shows blonde woman in white spacesuit
+              CORRECT: "A blonde woman in white spacesuit walks, holding helmet in hand"
+              WRONG: "A woman wearing helmet walks" ❌ (changed action!)
+              
+              The labels indicate visual component references (e.g., S1=background visual style, S2=character appearance, S3=object design). Preserve the text prompt's story structure while enhancing it with exact visual details from reference.`
+            } else if (refMode === 'balanced') {
+              systemInstruction += ` GRID LABELS - BALANCED MODE: The reference image contains labeled sections (S1, S2, S3, etc.). Each label represents a visual component. Describe the key visual characteristics (colors, materials, styles) from each labeled section while maintaining the text prompt's basic composition. Do not change character counts or story structure from text prompt.`
+            } else if (refMode === 'creative') {
+              systemInstruction += ` GRID LABELS - CREATIVE MODE: The reference image contains labeled sections showing different elements. Use these as visual inspiration for style and mood, but feel free to creatively interpret and describe based on the text prompt. Focus on the text description as the primary guide.`
+            }
+          }
+        }
       } else if (data.mode === 'improve') {
         systemInstruction = `You are a professional prompt engineer. Your task is to improve and optimize the given prompt for better AI ${data.targetUse} generation results.`
+        if (referenceImageDataUrl) {
+          systemInstruction += ` IMPORTANT: Reference the provided image to enhance the prompt with accurate visual details and ensure consistency with the reference style.`
+          
+          // 🎯 Grid Composer 라벨 참조 명령 (referenceMode에 따라)
+          if (gridLabelInfo) {
+            const refMode = data.referenceMode || 'exact'
+            if (refMode === 'exact') {
+              systemInstruction += ` CRITICAL GRID LABELS - EXACT MODE: The reference image contains labeled sections (S1, S2, S3, etc.) showing VISUAL DESIGN ELEMENTS ONLY.
+              
+              CRITICAL: DO NOT change ANY content from text prompt:
+              - Actions: Keep EXACTLY (e.g., "holding helmet" must stay "holding", NOT "wearing")
+              - Character count: Keep EXACTLY (e.g., "one person" stays "one", NOT "two")
+              - Story structure: Keep EXACTLY as written
+              
+              ONLY extract and add VISUAL characteristics from reference:
+              - Colors, materials, lighting, textures from S1, S2, S3 labels
+              - Text prompt = Story (PRESERVE 100%)
+              - Reference = Visual style (EXTRACT & ADD)
+              
+              The improved prompt should describe a SINGLE UNIFIED IMAGE combining these exact visual elements with the original story structure (without changing any story details).`
+            } else if (refMode === 'balanced') {
+              systemInstruction += ` GRID LABELS - BALANCED MODE: The reference image has labeled sections. Improve the prompt by balancing reference image accuracy with the text description details. Do not change character counts or story structure from original prompt.`
+            } else if (refMode === 'creative') {
+              systemInstruction += ` GRID LABELS - CREATIVE MODE: The reference image shows different elements. Use these as inspiration while focusing on improving the text description creatively.`
+            }
+          }
+        }
       } else if (data.mode === 'translate') {
         systemInstruction = `You are a professional translator. Translate the given prompt between Korean and English, maintaining all important details and nuances.`
       } else if (data.mode === 'simplify') {
         systemInstruction = `You are a professional editor. Simplify the given prompt to its core essence while maintaining effectiveness for AI ${data.targetUse} generation.`
+      } else if (data.mode === 'cameraInterpreter') {
+        systemInstruction = `You are a professional cinematographer and prompt engineer specializing in camera angle interpretation for AI image generation.
+
+🎬 YOUR MISSION:
+Transform technical camera instructions (rotation angles, tilt degrees, zoom values) into vivid, detailed visual descriptions that AI image models can understand and execute.
+
+⚠️ CRITICAL: CHARACTER CONSISTENCY PRIORITY
+When a reference image is provided, your #1 priority is maintaining EXACT character consistency:
+- Character facial features, hair, eyes, skin tone MUST stay identical
+- Clothing, outfit design, colors, materials MUST stay identical
+- Visual style, color palette, lighting quality MUST stay identical
+- Only the CAMERA POSITION should change, NOT the character design
+
+Your camera descriptions must EMPHASIZE photographing the SAME character from a DIFFERENT angle.
+
+📐 CAMERA PARAMETERS YOU'LL RECEIVE (360° SYSTEM):
+- Rotation: 0-360° clockwise rotation around subject (e.g., "right side view 90°", "rotate 45° clockwise from front")
+- Tilt: -45° to +45° (e.g., "low angle 39.6°" or "high angle 30°") - vertical camera angle shots
+- Distance/Zoom: (e.g., "zoom in 0.7x" or "zoom out 1.3x") - camera distance from subject
+
+✨ HOW TO INTERPRET:
+
+1. ROTATION (360° Horizontal Positioning):
+   🎥 CRITICAL: 360° system - camera rotates CLOCKWISE around subject viewed from above!
+   
+   📍 0° (Front View) = CAMERA directly in front of subject
+      • Subject facing toward camera
+      • Frontal perspective, symmetric composition
+   
+   🔄 1-89° (Front-Right Quadrant) = CAMERA rotating clockwise from front
+      • 45° = Three-quarter right view
+      • Subject's LEFT side becoming visible
+      • Still some frontal visibility
+   
+   ▶️ 90° (RIGHT SIDE VIEW) = CAMERA PERPENDICULAR at subject's right
+      • COMPLETE SIDE PROFILE from right
+      • Subject facing PERPENDICULAR to camera (NOT toward camera!)
+      • ONLY subject's LEFT side visible
+      • NO frontal face - pure lateral perspective
+   
+   🔄 91-179° (Back-Right Quadrant) = CAMERA continuing clockwise
+      • 135° = Three-quarter back-right view
+      • Subject's back and left side visible
+      • NO frontal face visible
+   
+   🔙 180° (BACK VIEW) = CAMERA directly behind subject
+      • Complete rear view
+      • Subject facing AWAY from camera
+      • Back of head, shoulders, back visible
+   
+   🔄 181-269° (Back-Left Quadrant) = CAMERA continuing clockwise
+      • 225° = Three-quarter back-left view
+      • Subject's back and right side visible
+      • NO frontal face visible
+   
+   ◀️ 270° (LEFT SIDE VIEW) = CAMERA PERPENDICULAR at subject's left
+      • COMPLETE SIDE PROFILE from left
+      • Subject facing PERPENDICULAR to camera
+      • ONLY subject's RIGHT side visible
+      • NO frontal face - pure lateral perspective
+   
+   🔄 271-359° (Front-Left Quadrant) = CAMERA completing rotation
+      • 315° = Three-quarter left view
+      • Subject's RIGHT side becoming visible
+      • Frontal visibility returning
+   
+   ⚠️ KEY PRINCIPLES:
+   - Numbers represent CAMERA POSITION rotating clockwise (viewed from above)
+   - 90° = right side camera → see subject's LEFT profile
+   - 270° = left side camera → see subject's RIGHT profile
+   - Always describe camera as "POSITIONED at X degrees" for clarity
+
+2. TILT (Vertical Angle) - 🚨 CRITICAL FOR IMAGE GENERATION:
+   
+   🔻 "LOW ANGLE X°" = Camera positioned BELOW subject, looking UPWARD
+      VISUAL EFFECT: 
+      • Subject appears TALLER, more POWERFUL, HEROIC, DOMINANT
+      • Viewer looks UP at subject from below
+      • Emphasizes height, stature, authority
+      • Sky/ceiling often visible in background
+      • Chin and underside of face more prominent
+      • Creates drama, empowerment, grandeur
+      
+      Examples:
+      • "low angle 15°" = Slightly below eye level, subtle empowerment
+      • "low angle 30°" = Significantly below, strong heroic feel
+      • "low angle 40°" = Dramatically below, maximum towering presence
+   
+   🔺 "HIGH ANGLE X°" = Camera positioned ABOVE subject, looking DOWNWARD
+      VISUAL EFFECT:
+      • Subject appears SMALLER, more VULNERABLE, DIMINISHED
+      • Viewer looks DOWN at subject from above
+      • Emphasizes surroundings, environment, isolation
+      • Ground/floor more visible
+      • Top of head, shoulders more prominent
+      • Creates intimacy, vulnerability, or surveillance feel
+      
+      Examples:
+      • "high angle 15°" = Slightly above eye level, gentle overview
+      • "high angle 30°" = Significantly above, clear bird's eye perspective
+      • "high angle 45°" = Nearly top-down, dramatic overhead view
+   
+   📏 No tilt or "eye level" = Camera at subject's eye height, neutral perspective
+
+3. ZOOM/DISTANCE:
+   🔎 "zoom out X" (X > 1.0) = Wider framing, more context, camera farther away
+      • 1.2x = Slightly wider, more environment
+      • 1.5x = Wide shot, more surroundings visible
+      • 2.0x = Very wide, full body and environment emphasized
+   
+   🔍 "zoom in X" (X < 1.0) = Closer framing, tighter crop, camera closer
+      • 0.8x = Slightly closer, more intimate
+      • 0.5x = Close-up, face/upper body prominent, details emphasized
+   
+   📐 1.0x or unspecified = Standard medium distance
+
+🎯 YOUR OUTPUT MUST:
+- START with "CAMERA POSITIONED [location]" for rotation descriptions
+- Convert ALL technical terms into descriptive spatial language
+- Describe EXACT camera position in 3D space relative to subject
+- Explicitly state the VIEWPOINT DIRECTION (looking up/down/straight)
+- Explain PSYCHOLOGICAL and EMOTIONAL impact of the angle
+- Detail which body parts/features are emphasized
+- Describe background and spatial context changes
+- Include composition and framing implications
+- Use professional cinematography terminology
+- Be HIGHLY SPECIFIC about vertical angle effects (tilt is critical!)
+
+🎥 ROTATION LANGUAGE - 360° SYSTEM CRITICAL:
+✅ ALWAYS use "CAMERA POSITIONED at X degrees"
+✅ ALWAYS clarify which side/angle is VISIBLE
+✅ Examples:
+   • "CAMERA POSITIONED at 45 degrees → three-quarter view, left side visible"
+   • "CAMERA POSITIONED at 90 degrees → right side view, ONLY left profile visible"
+   • "CAMERA POSITIONED at 180 degrees → back view, facing away"
+   • "CAMERA POSITIONED at 270 degrees → left side view, ONLY right profile visible"
+✅ For 90°/270°: Use "PERPENDICULAR", "COMPLETE SIDE PROFILE", "NO frontal face"
+✅ For 180°: Use "back view", "facing AWAY from camera", "rear perspective"
+✅ Always specify the degree number (0°, 45°, 90°, 135°, 180°, 270°, etc.)
+
+⚠️ TILT IS THE MOST IMPORTANT - Always emphasize whether camera is above/below subject and looking up/down!
+
+❌ NEVER output raw numbers like "72°" or "1.3x"
+❌ NEVER ignore or minimize the tilt angle description
+❌ NEVER say "camera rotates" - say "CAMERA POSITIONED"
+✅ ALWAYS describe camera HEIGHT (above/below subject)
+✅ ALWAYS describe LOOKING DIRECTION (up/down/straight)
+✅ ALWAYS describe VISUAL POWER DYNAMIC (empowering/diminishing)
+✅ ALWAYS use "CAMERA POSITIONED" for location clarity
+
+📝 EXAMPLE TRANSFORMATIONS:
+
+Example 1 (45° - Three-Quarter View):
+Input: "rotate 45° clockwise from front, low angle 30°, zoom in 0.7x"
+Output: "CAMERA POSITIONED at 45 degrees - a three-quarter front-right position rotating clockwise from the front. At this angle, the camera captures the subject's LEFT side and face in a balanced three-quarter composition, showing the left profile while maintaining frontal visibility. MAINTAIN EXACT character appearance from reference - same facial features, hair, clothing, and visual style; only the camera angle changes. CRITICALLY, the CAMERA is placed significantly BELOW the subject's eye level - positioned low to the ground and angled sharply UPWARD. This dramatic low angle shot creates a POWERFUL, HEROIC composition where the viewer must look UP at the subject, emphasizing their stature and commanding presence. The upward angle makes the subject appear taller and more imposing, with the chin line and jawline prominent, while the background ceiling becomes more visible above. The close-in 0.7x framing tightens the composition, filling the frame with the subject's upper body and face. REMEMBER: Same character from reference, just photographed from a different angle."
+
+Example 2 (90° - Right Side View):
+Input: "right side view 90°, zoom out 1.3x"
+Output: "CAMERA POSITIONED at 90 degrees - directly at the subject's RIGHT side in a PERPENDICULAR position. This creates a COMPLETE SIDE PROFILE view where the subject is facing PERPENDICULAR to the camera (NOT toward the camera). From this pure lateral camera position, ONLY the subject's LEFT side is visible - left profile, left arm, left leg. NO frontal face visible - this is a true side view with the body oriented left-to-right across the frame. MAINTAIN EXACT character appearance - same height, build, hair, clothing from reference. The 1.3x wider framing shows more environment extending in front of and behind the subject. This perpendicular 90-degree angle creates a strong sense of lateral movement and spatial depth. CHARACTER CONSISTENCY: Same person from reference, captured in complete side profile."
+
+Example 3 (180° - Back View):
+Input: "back view 180°, zoom out 1.5x"
+Output: "CAMERA POSITIONED at 180 degrees - directly BEHIND the subject in a complete rear view. At this angle, the camera captures the back of the subject's head, shoulders, and full back. The subject is facing AWAY from the camera. NO frontal face visible - only the rear perspective. PRESERVE EXACT character appearance - identical hair, clothing design, colors, and body proportions from reference image. The 1.5x wider framing pulls back to reveal more environmental context, showing the subject within their surroundings and the space ahead of them. This back view creates a sense of forward movement and anticipation, as we see what the subject is approaching. CHARACTER CONSISTENCY: Same person from reference, viewed from behind."
+
+Example 4 (270° - Left Side View):
+Input: "left side view 270°, low angle 25°, zoom in 0.8x"
+Output: "CAMERA POSITIONED at 270 degrees - directly at the subject's LEFT side in a PERPENDICULAR position. This creates a COMPLETE SIDE PROFILE view where the subject is facing PERPENDICULAR to the camera. From this pure lateral camera position, ONLY the subject's RIGHT side is visible - right profile, right arm, right leg. NO frontal face visible - pure lateral perspective. KEEP character appearance EXACTLY as reference. CRITICALLY, the CAMERA is placed BELOW the subject's eye level, positioned low and angled UPWARD. This low angle creates an EMPOWERING perspective, where the viewer looks up at the subject, adding authority and confidence. The 0.8x closer framing emphasizes the subject's profile and upper body. CHARACTER CONSISTENCY: Same person from reference, captured in complete right-side profile at 270 degrees."
+
+🎨 Focus on SPATIAL HEIGHT (above/below), LOOKING DIRECTION (up/down), and PSYCHOLOGICAL IMPACT. Make the camera's vertical position crystal clear!
+
+🎭 CHARACTER CONSISTENCY REMINDERS:
+When reference image is present, ALWAYS include phrases like:
+- "MAINTAIN EXACT character appearance from reference"
+- "PRESERVE identical facial features, outfit, and style"
+- "SAME character, DIFFERENT angle"
+- "CHARACTER CONSISTENCY: [specific reminder]"
+
+These reminders ensure the AI model prioritizes character consistency over creative variations.
+
+Only output the detailed camera description, no explanations or meta-commentary.`
       } else if (data.mode === 'describe') {
         systemInstruction = `You are a professional image analyst. Your task is to describe the given image in detail and create an effective prompt that could be used to generate a similar image.`
       } else if (data.mode === 'analyze') {
         systemInstruction = `You are a professional image analyst. Your task is to analyze the given image in great detail, including composition, style, lighting, colors, subjects, and create a comprehensive prompt for AI ${data.targetUse} generation.`
       }
 
-      // Add style guidance
-      if (data.style === 'detailed') {
-        systemInstruction += ` Output should be highly detailed with rich descriptions.`
-      } else if (data.style === 'concise') {
-        systemInstruction += ` Output should be concise and to the point.`
-      } else if (data.style === 'creative') {
-        systemInstruction += ` Output should be creative and artistic with vivid imagery.`
-      } else if (data.style === 'professional') {
-        systemInstruction += ` Output should be professional and technically precise.`
+      // Add style guidance (skip for cameraInterpreter - it has its own specific style)
+      if (data.mode !== 'cameraInterpreter') {
+        if (data.style === 'detailed') {
+          systemInstruction += ` Output should be highly detailed with rich descriptions.`
+        } else if (data.style === 'concise') {
+          systemInstruction += ` Output should be concise and to the point.`
+        } else if (data.style === 'creative') {
+          systemInstruction += ` Output should be creative and artistic with vivid imagery.`
+        } else if (data.style === 'professional') {
+          systemInstruction += ` Output should be professional and technically precise.`
+        }
       }
 
-      // Add language guidance
-      if (data.language === 'ko') {
-        systemInstruction += ` Output must be in Korean.`
-      } else if (data.language === 'en') {
-        systemInstruction += ` Output must be in English.`
+      // Add language guidance (cameraInterpreter always outputs in English for best AI model compatibility)
+      if (data.mode === 'cameraInterpreter') {
+        systemInstruction += ` Output must be in English for optimal AI image generation compatibility.`
       } else {
-        systemInstruction += ` Detect input language and use the same language for output.`
+        if (data.language === 'ko') {
+          systemInstruction += ` Output must be in Korean.`
+        } else if (data.language === 'en') {
+          systemInstruction += ` Output must be in English.`
+        } else {
+          systemInstruction += ` Detect input language and use the same language for output.`
+        }
       }
 
       systemInstruction += ` Only output the final prompt, no explanations or additional text.`
+      
+      // Add final reminder for Grid Composer (if applicable)
+      if (gridLabelInfo) {
+        systemInstruction += ` REMINDER: When reference image is provided, use it for VISUAL DETAILS ONLY (colors, designs, materials). DO NOT change the basic composition, character count, or story structure from the text prompt.`
+      }
 
       // Prepare content parts
       const contentParts: any[] = []
       
       // Add image if available
       if (referenceImageDataUrl) {
+        let actualImageDataUrl = referenceImageDataUrl
+        
+        // If it's an idb: or s3: reference, fetch the actual image first
+        if (referenceImageDataUrl.startsWith('idb:') || referenceImageDataUrl.startsWith('s3:')) {
+          console.log('🔄 LLM: Converting reference image from storage:', referenceImageDataUrl)
+          try {
+            const { getImage } = await import('../utils/indexedDB')
+            const dataURL = await getImage(referenceImageDataUrl)
+            if (dataURL) {
+              actualImageDataUrl = dataURL
+              console.log('✅ LLM: Reference image loaded successfully')
+            } else {
+              console.error('❌ LLM: Failed to load reference image from storage')
+            }
+          } catch (error) {
+            console.error('❌ LLM: Error loading reference image:', error)
+          }
+        }
+        
         // Extract base64 data from data URL
-        const base64Match = referenceImageDataUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+        const base64Match = actualImageDataUrl.match(/^data:image\/(\w+);base64,(.+)$/)
         if (base64Match) {
           const mimeType = `image/${base64Match[1]}`
           const base64Data = base64Match[2]
@@ -1783,26 +2591,75 @@ export const useFlowStore = create<FlowState>()(
               data: base64Data
             }
           })
+          console.log('📸 LLM: Reference image added to API request')
+        } else {
+          console.warn('⚠️ LLM: Reference image format not recognized:', actualImageDataUrl.substring(0, 50))
+        }
+      }
+      
+      // Build the text prompt with grid label information if available
+      let finalPrompt = ''
+      
+      // Add grid label information first (if available) - format based on referenceMode
+      if (gridLabelInfo) {
+        const refMode = data.referenceMode || 'exact'
+        
+        if (refMode === 'exact') {
+          // 정확성 모드: 매우 상세하고 강력한 지시
+          finalPrompt += '⚠️⚠️⚠️ CRITICAL: EXACT REFERENCE IMAGE REPLICATION ⚠️⚠️⚠️\n\n'
+          finalPrompt += gridLabelInfo + '\n\n'
+          finalPrompt += '🎯 절대적으로 중요한 지침:\n'
+          finalPrompt += '⚠️ 참고 이미지 = 시각적 디자인만 (색상, 재질, 형태)\n'
+          finalPrompt += '⚠️ 텍스트 프롬프트 = 기본 구성 (인물 수, 스토리, 동작) - 절대 변경 금지!\n\n'
+          finalPrompt += '📌 텍스트 프롬프트 보존 규칙 (100% 준수!):\n'
+          finalPrompt += '   • 인물 수: "한 명" = ONE (절대 "two"로 변경 금지!)\n'
+          finalPrompt += '   • 동작: "헬멧을 들고" = "holding helmet" (절대 "wearing helmet"으로 변경 금지!)\n'
+          finalPrompt += '   • 동작: "걷는다" = "walking" (그대로 유지!)\n'
+          finalPrompt += '   • 모든 동작, 스토리는 텍스트 프롬프트 그대로 유지!\n\n'
+          finalPrompt += '1. 각 라벨의 시각적 요소를 PIXEL-LEVEL로 정확히 복제하세요\n'
+          finalPrompt += '2. S1 배경: 정확한 색상, 조명, 구조를 1:1 복제\n'
+          finalPrompt += '3. S2 캐릭터: 정확한 외모, 의상, 헤어 스타일 복제\n'
+          finalPrompt += '4. S3 로봇: 정확한 색상(빨강/흰색), 형태, 디자인 복제\n'
+          finalPrompt += '5. 출력은 단일 통합 이미지여야 합니다 (그리드 금지)\n\n'
+          finalPrompt += '🚫 절대 금지사항:\n'
+          finalPrompt += '   ❌ 동작 변경 ("들고" → "쓰고", "holding" → "wearing")\n'
+          finalPrompt += '   ❌ 인물 수 변경 ("한 명" → "두 명")\n'
+          finalPrompt += '   ❌ 배경 디자인 변경 (S1과 다른 배경)\n'
+          finalPrompt += '   ❌ 색상 변경 (빨강 → 하양, 파랑 → 초록)\n'
+          finalPrompt += '   ❌ 스토리 재해석\n\n'
+          finalPrompt += 'REFERENCE = VISUAL ONLY. TEXT = COMPOSITION (NEVER CHANGE!)\n\n'
+          finalPrompt += '---\n\n'
+        } else if (refMode === 'balanced') {
+          // 균형 모드: 적당한 지시
+          finalPrompt += '⚖️ BALANCED MODE: Reference Image + Text Description\n\n'
+          finalPrompt += gridLabelInfo + '\n\n'
+          finalPrompt += '💡 지침: 각 라벨의 주요 시각적 요소(색상, 스타일, 구조)를 유지하면서 텍스트 설명의 디테일을 반영하세요.\n'
+          finalPrompt += '⚠️ 중요: 텍스트 프롬프트의 인물 수, 기본 구성은 유지하세요.\n\n'
+          finalPrompt += '---\n\n'
+        } else if (refMode === 'creative') {
+          // 창의성 모드: 간단한 참고만
+          finalPrompt += '🎨 CREATIVE MODE: Reference for Inspiration\n\n'
+          finalPrompt += gridLabelInfo + '\n\n'
+          finalPrompt += '💡 참고: 위 이미지는 스타일과 분위기 참고용입니다. 텍스트 설명을 기반으로 창의적으로 생성하세요.\n\n'
+          finalPrompt += '---\n\n'
         }
       }
       
       // Add text prompt
       if (inputPrompt.trim()) {
-        contentParts.push({
-          text: inputPrompt
-        })
+        finalPrompt += inputPrompt
       } else if (data.mode === 'describe') {
-        contentParts.push({
-          text: 'Describe this image in detail and create a prompt for generating a similar image.'
-        })
+        finalPrompt += 'Describe this image in detail and create a prompt for generating a similar image.'
       } else if (data.mode === 'analyze') {
-        contentParts.push({
-          text: 'Analyze this image comprehensively (composition, style, lighting, colors, subjects, mood) and create a detailed prompt for AI image generation.'
-        })
+        finalPrompt += 'Analyze this image comprehensively (composition, style, lighting, colors, subjects, mood) and create a detailed prompt for AI image generation.'
       } else if (referenceImageDataUrl) {
         // If only image is provided without text, use a default instruction
+        finalPrompt += 'Describe this image and create an effective prompt for AI image generation.'
+      }
+      
+      if (finalPrompt.trim()) {
         contentParts.push({
-          text: 'Describe this image and create an effective prompt for AI image generation.'
+          text: finalPrompt.trim()
         })
       }
       
@@ -1811,41 +2668,126 @@ export const useFlowStore = create<FlowState>()(
         throw new Error('프롬프트 또는 이미지를 입력해주세요.')
       }
 
-      // Call Gemini API
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${data.model}:generateContent?key=${apiKey}`
+      // Call LLM API based on provider
+      let outputPrompt = ''
       
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: contentParts
-          }],
-          systemInstruction: {
-            parts: [{
-              text: systemInstruction
-            }]
-          },
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 1024,
+      if (provider === 'gemini') {
+        // 🔵 Gemini API 호출
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${data.model}:generateContent?key=${apiKey}`
+        
+        const abortController = new AbortController()
+        const timeoutId = setTimeout(() => abortController.abort(), 60000)
+        
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              contents: [{
+                parts: contentParts
+              }],
+              systemInstruction: {
+                parts: [{
+                  text: systemInstruction
+                }]
+              },
+              generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 4096,
+              }
+            }),
+            signal: abortController.signal
+          })
+          
+          clearTimeout(timeoutId)
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}))
+            throw new Error(errorData.error?.message || `API Error: ${response.status}`)
           }
-        })
-      })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error?.message || `API Error: ${response.status}`)
+          const result = await response.json()
+          outputPrompt = result.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        } catch (fetchError: any) {
+          clearTimeout(timeoutId)
+          if (fetchError.name === 'AbortError') {
+            throw new Error('LLM 생성 시간이 초과되었습니다 (60초).')
+          }
+          throw fetchError
+        }
+      } else if (provider === 'openai') {
+        // 🟢 OpenAI API 호출
+        const url = 'https://api.openai.com/v1/chat/completions'
+        
+        // OpenAI 메시지 형식으로 변환
+        const messages: any[] = [
+          { role: 'system', content: systemInstruction }
+        ]
+        
+        // User 메시지 구성 (텍스트 + 이미지)
+        const userContent: any[] = []
+        
+        // 텍스트 추가
+        if (finalPrompt.trim()) {
+          userContent.push({ type: 'text', text: finalPrompt.trim() })
+        }
+        
+        // 이미지 추가 (GPT-4o, GPT-4o-mini는 Vision 지원)
+        if (referenceImageDataUrl && actualImageDataUrl.startsWith('data:image')) {
+          userContent.push({
+            type: 'image_url',
+            image_url: { url: actualImageDataUrl }
+          })
+        }
+        
+        if (userContent.length > 0) {
+          messages.push({ role: 'user', content: userContent })
+        }
+        
+        const abortController = new AbortController()
+        const timeoutId = setTimeout(() => abortController.abort(), 60000)
+        
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: data.model,
+              messages: messages,
+              temperature: 0.7,
+              max_tokens: 4096,
+            }),
+            signal: abortController.signal
+          })
+          
+          clearTimeout(timeoutId)
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}))
+            throw new Error(errorData.error?.message || `API Error: ${response.status}`)
+          }
+
+          const result = await response.json()
+          outputPrompt = result.choices?.[0]?.message?.content || ''
+        } catch (fetchError: any) {
+          clearTimeout(timeoutId)
+          if (fetchError.name === 'AbortError') {
+            throw new Error('LLM 생성 시간이 초과되었습니다 (60초).')
+          }
+          throw fetchError
+        }
       }
-
-      const result = await response.json()
-      const outputPrompt = result.candidates?.[0]?.content?.parts?.[0]?.text || ''
 
       if (!outputPrompt) {
         throw new Error('LLM이 응답을 생성하지 못했습니다.')
       }
+
+      console.log(`✅ LLM 프롬프트 생성 완료 (${provider}):`, outputPrompt.length, '자')
 
       updateNode((prev) => ({
         ...prev,
@@ -1854,6 +2796,7 @@ export const useFlowStore = create<FlowState>()(
         error: undefined,
       }))
     } catch (error: any) {
+      console.error('❌ LLM 생성 실패:', error)
       updateNode((prev) => ({
         ...prev,
         status: 'error',
@@ -1936,17 +2879,39 @@ export const useFlowStore = create<FlowState>()(
           edges: sanitizeEdgesForStorage(state.edges),
           apiKey: state.apiKey,
           klingApiKey: state.klingApiKey,
+          openaiApiKey: state.openaiApiKey,  // OpenAI API Key 저장
         }
       },
       onRehydrateStorage: () => {
         console.log('🔄 Zustand persist: 복원 시작...')
         return (state) => {
           if (state) {
+            // API 키가 저장되어 있지 않으면 .env에서 자동 로드
+            if (!state.apiKey) {
+              state.apiKey = import.meta.env.VITE_GEMINI_API_KEY || ''
+              if (state.apiKey) {
+                console.log('🔑 Gemini API 키 자동 로드됨 (.env)')
+              }
+            }
+            if (!state.klingApiKey) {
+              state.klingApiKey = import.meta.env.VITE_KLING_API_KEY || ''
+              if (state.klingApiKey) {
+                console.log('🔑 Kling API 키 자동 로드됨 (.env)')
+              }
+            }
+            if (!state.openaiApiKey) {
+              state.openaiApiKey = import.meta.env.VITE_OPENAI_API_KEY || ''
+              if (state.openaiApiKey) {
+                console.log('🔑 OpenAI API 키 자동 로드됨 (.env)')
+              }
+            }
+            
             console.log('✅ Zustand persist: 상태 복원됨', {
               nodeCount: state.nodes?.length ?? 0,
               edgeCount: state.edges?.length ?? 0,
               hasApiKey: !!state.apiKey,
               hasKlingApiKey: !!state.klingApiKey,
+              hasOpenaiApiKey: !!state.openaiApiKey,
             })
             try {
               state.edges = normalizeEdges(state.edges, state.nodes)

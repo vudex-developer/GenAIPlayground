@@ -79,10 +79,14 @@ export async function uploadImageToS3(
     const blob = dataURLToBlob(dataURL)
     const key = `images/${nodeId || 'unknown'}/${id}.jpg`
 
+    // 🔧 브라우저 호환성: Blob을 ArrayBuffer로 변환
+    const arrayBuffer = await blob.arrayBuffer()
+    const buffer = new Uint8Array(arrayBuffer)
+
     const command = new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
-      Body: blob,
+      Body: buffer,  // Uint8Array로 전달
       ContentType: blob.type,
       Metadata: {
         nodeId: nodeId || '',
@@ -161,10 +165,14 @@ export async function uploadVideoToS3(
     const blob = await response.blob()
     const key = `videos/${nodeId || 'unknown'}/${id}.mp4`
 
+    // 🔧 브라우저 호환성: Blob을 ArrayBuffer로 변환
+    const arrayBuffer = await blob.arrayBuffer()
+    const buffer = new Uint8Array(arrayBuffer)
+
     const command = new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
-      Body: blob,
+      Body: buffer,  // Uint8Array로 전달
       ContentType: blob.type || 'video/mp4',
       Metadata: {
         nodeId: nodeId || '',

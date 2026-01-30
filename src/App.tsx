@@ -24,6 +24,8 @@ function App() {
   const history = useFlowStore((state) => state.history)
   const apiKey = useFlowStore((state) => state.apiKey)
   const setApiKey = useFlowStore((state) => state.setApiKey)
+  const openaiApiKey = useFlowStore((state) => state.openaiApiKey)
+  const setOpenaiApiKey = useFlowStore((state) => state.setOpenaiApiKey)
   const klingApiKey = useFlowStore((state) => state.klingApiKey)
   const setKlingApiKey = useFlowStore((state) => state.setKlingApiKey)
   const nodes = useFlowStore((state) => state.nodes)
@@ -672,10 +674,10 @@ function App() {
             
             <div>
               <div className="text-sm font-semibold text-slate-100">
-                Google Gemini API Key
+                🔵 Google Gemini API Key
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                이미지 생성 (Nano Image)과 비디오 생성 (Gemini Video)에 사용됩니다.
+                이미지 생성 (Nano Image), 비디오 생성 (Gemini Video), LLM Prompt Helper에 사용됩니다.
               </p>
               <input
                 type="password"
@@ -688,7 +690,32 @@ function App() {
             
             <div>
               <div className="text-sm font-semibold text-slate-100">
-                Kling AI API Key
+                🟢 OpenAI API Key
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                LLM Prompt Helper에서 GPT-4o, GPT-4o-mini 등 OpenAI 모델 사용시 필요합니다.
+                <br />
+                <a 
+                  href="https://platform.openai.com/api-keys" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:underline"
+                >
+                  OpenAI에서 API 키 발급받기 →
+                </a>
+              </p>
+              <input
+                type="password"
+                value={openaiApiKey}
+                onChange={(event) => setOpenaiApiKey(event.target.value)}
+                placeholder="sk-proj-..."
+                className="mt-3 w-full rounded-md border border-white/10 bg-[#0b1117] px-3 py-2 text-sm text-slate-100 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-200/60"
+              />
+            </div>
+            
+            <div>
+              <div className="text-sm font-semibold text-slate-100">
+                🎬 Kling AI API Key
               </div>
               <p className="mt-1 text-xs text-slate-400">
                 Access Key와 Secret Key를 콜론(:)으로 구분해서 입력하세요.

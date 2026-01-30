@@ -52,14 +52,33 @@ npm install
 cd server && npm install && cd ..
 ```
 
-### 2. 환경 변수 설정
+### 2. 환경 변수 설정 (선택 사항)
 
-`.env` 파일을 생성하고 API 키를 입력하세요:
+`.env` 파일을 생성하고 API 키를 입력하면 자동으로 로드됩니다:
+
+```bash
+# .env 파일 생성
+cp .env.example .env
+
+# API 키 입력 (선택)
+nano .env
+```
 
 ```env
-VITE_GEMINI_API_KEY=your_gemini_api_key
-VITE_KLING_API_KEY=your_kling_access_key
+# Google Gemini API
+VITE_GEMINI_API_KEY=your_actual_api_key_here
+
+# Kling AI API (AccessKey:SecretKey 형식)
+VITE_KLING_API_KEY=your_access_key:your_secret_key
+
+# AWS S3 (선택 사항)
+VITE_AWS_REGION=us-east-1
+VITE_AWS_S3_BUCKET=nanobanana-media
+VITE_AWS_ACCESS_KEY_ID=your_access_key_id
+VITE_AWS_SECRET_ACCESS_KEY=your_secret_access_key
 ```
+
+**참고:** `.env` 파일에 API 키를 입력하지 않아도, 앱 실행 후 Settings에서 입력할 수 있습니다.
 
 ### 3. 실행
 
@@ -248,6 +267,7 @@ git push
 
 ### 📖 상세 가이드
 
+- **API 키 자동 저장**: [API-KEYS-GUIDE.md](./API-KEYS-GUIDE.md) 🔑
 - **AWS S3 클라우드 저장소**: [AWS-SETUP.md](./AWS-SETUP.md) ⭐ 추천!
 - **빠른 체크리스트**: [QUICK-CHECKLIST.md](./QUICK-CHECKLIST.md)
 - **전체 최적화 가이드**: [OPTIMIZATION-GUIDE.md](./OPTIMIZATION-GUIDE.md)

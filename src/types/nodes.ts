@@ -54,6 +54,20 @@ export type MotionPromptNodeData = {
   subjectMotion: string
   lighting: string
   combinedPrompt: string
+  // Camera Control (360도 시스템)
+  cameraRotation: number  // 0 ~ 360 degrees (360도 회전: 0°=정면, 90°=오른쪽, 180°=뒤, 270°=왼쪽)
+  cameraTilt: number      // -45 ~ 45 degrees (상하 틸트)
+  cameraDistance: number  // 0.5 ~ 2.0 (거리/줌)
+  // Keyframe Animation (시작/끝 프레임)
+  enableKeyframes: boolean  // 키프레임 애니메이션 활성화
+  // Start Frame
+  startRotation: number   // 시작 프레임 회전
+  startTilt: number       // 시작 프레임 틸트
+  startDistance: number   // 시작 프레임 거리
+  // End Frame
+  endRotation: number     // 끝 프레임 회전
+  endTilt: number         // 끝 프레임 틸트
+  endDistance: number     // 끝 프레임 거리
 }
 
 export type GeminiVideoModel =
@@ -175,11 +189,13 @@ export type LLMPromptNodeData = {
   status: NodeStatus
   inputPrompt: string  // 사용자가 입력한 간단한 프롬프트
   outputPrompt: string  // LLM이 생성한 정제된 프롬프트
-  mode: 'expand' | 'improve' | 'translate' | 'simplify' | 'describe' | 'analyze'  // 처리 모드
+  mode: 'expand' | 'improve' | 'translate' | 'simplify' | 'describe' | 'analyze' | 'cameraInterpreter'  // 처리 모드
   style: 'detailed' | 'concise' | 'creative' | 'professional'  // 출력 스타일
   language: 'ko' | 'en' | 'auto'  // 출력 언어
   targetUse: 'image' | 'video' | 'general'  // 용도
-  model: 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'gemini-1.5-pro'  // LLM 모델
+  provider: 'gemini' | 'openai'  // LLM Provider
+  model: 'gemini-2.5-flash' | 'gemini-2.5-flash-lite' | 'gemini-2.5-pro' | 'gpt-4o' | 'gpt-4o-mini' | 'gpt-4-turbo' | 'gpt-3.5-turbo'  // LLM 모델
+  referenceMode: 'creative' | 'balanced' | 'exact'  // Reference accuracy level (Grid Composer → Nano Banana)
   referenceImageUrl?: string  // 참고 이미지 URL
   referenceImageDataUrl?: string  // 참고 이미지 Data URL
   error?: string
@@ -223,6 +239,17 @@ export const createNodeData = (type: NodeType): NodeData => {
         subjectMotion: '',
         lighting: '',
         combinedPrompt: '',
+        cameraRotation: 0,    // 기본값: 0도 (정면)
+        cameraTilt: 0,        // 기본값: 0도 (Eye Level)
+        cameraDistance: 1.0,  // 기본값: 1.0x (보통 거리)
+        // Keyframe Animation
+        enableKeyframes: false,  // 기본값: 비활성화
+        startRotation: 0,
+        startTilt: 0,
+        startDistance: 1.0,
+        endRotation: 0,
+        endTilt: 0,
+        endDistance: 1.0,
       }
     case 'geminiVideo':
       return {
@@ -279,7 +306,7 @@ export const createNodeData = (type: NodeType): NodeData => {
         labelColor: '#ffffff',
         backgroundColor: '#000000',
         cellPadding: 10,
-        aspectRatioMode: 'contain',  // Default: maintain aspect ratio with padding
+        aspectRatioMode: 'cover',  // Default: maintain aspect ratio and fill cell (minimal padding)
       }
     case 'llmPrompt':
       return {
@@ -290,7 +317,9 @@ export const createNodeData = (type: NodeType): NodeData => {
         style: 'detailed',
         language: 'auto',
         targetUse: 'image',
-        model: 'gemini-2.0-flash-exp',
+        provider: 'gemini',  // 기본값: Gemini
+        model: 'gemini-2.5-flash',
+        referenceMode: 'exact',  // 기본값: 정확성 (프로 작업)
       }
     default:
       return {}

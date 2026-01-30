@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><title>LocalStorage Test</title></head>
+<body>
+<h1>LocalStorage Test</h1>
+<script>
+  // Check localStorage
+  console.log('=== LocalStorage Keys ===');
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    const value = localStorage.getItem(key);
+    console.log(`${key}: ${value ? value.substring(0, 100) : 'empty'}...`);
+  }
+  
+  // Try to save
+  try {
+    localStorage.setItem('test-save', 'Hello World');
+    console.log('✅ Save test: SUCCESS');
+  } catch (e) {
+    console.error('❌ Save test: FAILED', e);
+  }
+  
+  document.body.innerHTML += '<pre>' + JSON.stringify({
+    keys: Array.from({length: localStorage.length}, (_, i) => localStorage.key(i)),
+    canWrite: true
+  }, null, 2) + '</pre>';
+</script>
+</body>
+</html>

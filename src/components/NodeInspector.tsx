@@ -1,9 +1,10 @@
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useRef, useState, useEffect, useCallback } from 'react'
 import { useFlowStore } from '../stores/flowStore'
 import { useIMEInput } from '../hooks/useIMEInput'
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
 import { getImage } from '../utils/indexedDB'
 import { X } from 'lucide-react'
+import CameraPreview3D from './CameraPreview3D'
 import type {
   TextPromptNodeData,
   MotionPromptNodeData,
@@ -23,19 +24,52 @@ import type {
 const NodeInspector = () => {
   const { nodes, selectedNodeId, setSelectedNodeId, updateNodeData } = useFlowStore()
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
+  
+  // 🎨 크기 조절 기능 (hooks는 항상 최상단에!)
+  const [width, setWidth] = useState(400) // 기본 너비 400px
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeRef = useRef<HTMLDivElement>(null)
 
+  // 🎯 Resize 핸들러 (useEffect는 조건부 return 이전에!)
+  useEffect(() => {
+    if (!isResizing) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = window.innerWidth - e.clientX
+      // 최소 300px, 최대 800px
+      setWidth(Math.min(Math.max(newWidth, 300), 800))
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [isResizing])
+
+  // 노드가 선택되지 않았을 때는 패널을 완전히 숨김
   if (!selectedNode) {
-    return (
-      <div className="flex h-full w-80 flex-col border-l border-white/10 bg-[#0f141a]/95 p-4">
-        <div className="flex items-center justify-center text-slate-400 text-sm h-full">
-          Select a node to view details
-        </div>
-      </div>
-    )
+    return null
   }
 
   const handleClose = () => {
     setSelectedNodeId(null)
+  }
+
+  // 🎯 Resize 시작
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
   }
 
   const renderNodeSettings = () => {
@@ -66,23 +100,36 @@ const NodeInspector = () => {
   }
 
   return (
-    <div className="flex h-full w-96 flex-col border-l border-white/10 bg-[#0f141a]/95">
+    <div 
+      ref={resizeRef}
+      className="relative flex h-full flex-col border border-white/10 bg-[#0f141a]/95 backdrop-blur-sm shadow-2xl rounded-l-2xl overflow-hidden"
+      style={{ width: `${width}px` }}
+    >
+      {/* 🎯 Resize Handle (좌측 경계) */}
+      <div
+        onMouseDown={handleMouseDown}
+        className="absolute left-0 top-0 h-full w-2 cursor-ew-resize hover:bg-blue-400/50 transition-colors z-10 group"
+      >
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-2 h-16 bg-blue-400/30 rounded-r-full opacity-0 group-hover:opacity-100 transition-opacity" />
+      </div>
+
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/10 p-4">
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 p-4">
         <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-blue-400" />
-          <h2 className="font-semibold text-slate-200">Node Inspector</h2>
+          <div className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-200">Node Inspector</h2>
         </div>
         <button
           onClick={handleClose}
-          className="rounded-lg p-1 text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
+          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/10 hover:text-slate-200"
+          title="닫기"
         >
           <X className="h-4 w-4" />
         </button>
       </div>
 
       {/* Settings Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
         {renderNodeSettings()}
       </div>
     </div>
@@ -113,14 +160,98 @@ const TextPromptSettings = ({ node, updateNodeData }: any) => {
 
 const MotionPromptSettings = ({ node, updateNodeData }: any) => {
   const data = node.data as MotionPromptNodeData
+  const nodes = useFlowStore((state) => state.nodes)
+  const edges = useFlowStore((state) => state.edges)
+  
+  // Check for incoming text prompt (on basePrompt handle or any target handle)
+  const incomingPromptEdge = edges.find((e) => 
+    e.target === node.id && 
+    (!e.targetHandle || e.targetHandle === 'basePrompt')
+  )
+  const incomingPromptNode = incomingPromptEdge 
+    ? nodes.find((n) => n.id === incomingPromptEdge.source)
+    : null
+  const incomingPromptText = incomingPromptNode?.type === 'textPrompt'
+    ? (incomingPromptNode.data as TextPromptNodeData).prompt
+    : ''
+  
+  // Use incoming prompt if available and basePrompt is empty
+  const effectiveBasePrompt = data.basePrompt || incomingPromptText
 
   const updateCombined = (updates: Partial<MotionPromptNodeData>) => {
     const updated = { ...data, ...updates }
+    
+    // Use incoming prompt if basePrompt is empty
+    if (!updated.basePrompt && incomingPromptText) {
+      updated.basePrompt = incomingPromptText
+    }
+    
+    // Camera angle descriptors
+    const cameraAngles: string[] = []
+    
+    // Rotation
+    // Rotation (360도 시스템)
+    if (updated.cameraRotation !== undefined && updated.cameraRotation !== 0) {
+      const angle = updated.cameraRotation
+      
+      // 360도를 0~360 범위로 정규화하고 반올림
+      const normalizedAngle = Math.round(((angle % 360) + 360) % 360)
+      
+      if (normalizedAngle === 0 || normalizedAngle === 360) {
+        // 0° = Front view (프롬프트에 추가 안 함)
+      } else if (normalizedAngle > 0 && normalizedAngle < 90) {
+        // 0-90°: Front-right
+        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+      } else if (normalizedAngle === 90) {
+        // 90°: Right side
+        cameraAngles.push(`right side view 90°`)
+      } else if (normalizedAngle > 90 && normalizedAngle < 180) {
+        // 90-180°: Back-right
+        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+      } else if (normalizedAngle === 180) {
+        // 180°: Back view
+        cameraAngles.push(`back view 180°`)
+      } else if (normalizedAngle > 180 && normalizedAngle < 270) {
+        // 180-270°: Back-left
+        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+      } else if (normalizedAngle === 270) {
+        // 270°: Left side
+        cameraAngles.push(`left side view 270°`)
+      } else {
+        // 270-360°: Front-left
+        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+      }
+    }
+    
+    // Tilt
+    if (updated.cameraTilt && updated.cameraTilt !== 0) {
+      const roundedTilt = Math.round(Math.abs(updated.cameraTilt))
+      if (updated.cameraTilt > 0) {
+        cameraAngles.push(`high angle ${roundedTilt}°`)
+      } else {
+        cameraAngles.push(`low angle ${roundedTilt}°`)
+      }
+    }
+    
+    // Distance
+    if (updated.cameraDistance && updated.cameraDistance !== 1.0) {
+      const roundedDistance = Math.round(updated.cameraDistance * 100) / 100
+      if (updated.cameraDistance > 1.0) {
+        cameraAngles.push(`zoom out ${roundedDistance}x`)
+      } else {
+        cameraAngles.push(`zoom in ${roundedDistance}x`)
+      }
+    }
+    
+    // Use effective base prompt (incoming or manual)
+    const finalBasePrompt = updated.basePrompt || incomingPromptText
+    
     const combined = [
-      updated.basePrompt,
+      finalBasePrompt,
       updated.cameraMovement,
       updated.subjectMotion,
       updated.lighting,
+      ...cameraAngles,
     ]
       .filter(Boolean)
       .join(', ')
@@ -130,6 +261,72 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
   const basePromptIME = useIMEInput(data.basePrompt, (value) => {
     updateCombined({ basePrompt: value })
   })
+  
+  // Auto-update combined prompt when incoming prompt or camera values change
+  useEffect(() => {
+    // Only update if incoming prompt exists and basePrompt is empty
+    if (incomingPromptText && !data.basePrompt) {
+      // Create combined with current camera values
+      const cameraAngles: string[] = []
+      
+      // Rotation (360도 시스템)
+      if (data.cameraRotation !== undefined && data.cameraRotation !== 0) {
+        const angle = data.cameraRotation
+        const normalizedAngle = Math.round(((angle % 360) + 360) % 360)
+        
+        if (normalizedAngle === 0 || normalizedAngle === 360) {
+          // Front view
+        } else if (normalizedAngle > 0 && normalizedAngle < 90) {
+          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        } else if (normalizedAngle === 90) {
+          cameraAngles.push(`right side view 90°`)
+        } else if (normalizedAngle > 90 && normalizedAngle < 180) {
+          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        } else if (normalizedAngle === 180) {
+          cameraAngles.push(`back view 180°`)
+        } else if (normalizedAngle > 180 && normalizedAngle < 270) {
+          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        } else if (normalizedAngle === 270) {
+          cameraAngles.push(`left side view 270°`)
+        } else {
+          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        }
+      }
+      
+      if (data.cameraTilt && data.cameraTilt !== 0) {
+        const roundedTilt = Math.round(Math.abs(data.cameraTilt))
+        if (data.cameraTilt > 0) {
+          cameraAngles.push(`high angle ${roundedTilt}°`)
+        } else {
+          cameraAngles.push(`low angle ${roundedTilt}°`)
+        }
+      }
+      
+      if (data.cameraDistance && data.cameraDistance !== 1.0) {
+        const roundedDistance = Math.round(data.cameraDistance * 100) / 100
+        if (data.cameraDistance > 1.0) {
+          cameraAngles.push(`zoom out ${roundedDistance}x`)
+        } else {
+          cameraAngles.push(`zoom in ${roundedDistance}x`)
+        }
+      }
+      
+      const combined = [
+        incomingPromptText,
+        data.cameraMovement,
+        data.subjectMotion,
+        data.lighting,
+        ...cameraAngles,
+      ]
+        .filter(Boolean)
+        .join(', ')
+      
+      // Only update if combined actually changed
+      if (combined !== data.combinedPrompt) {
+        updateNodeData(node.id, { combinedPrompt: combined })
+      }
+    }
+  }, [incomingPromptText, data.basePrompt, data.cameraRotation, data.cameraTilt, data.cameraDistance, data.cameraMovement, data.subjectMotion, data.lighting])
 
   const presets = {
     camera: ['Zoom In', 'Zoom Out', 'Pan Left', 'Pan Right', 'Orbit', 'Static'],
@@ -141,10 +338,27 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
     <div className="space-y-4">
       <div>
         <label className="mb-2 block text-sm font-medium text-slate-300">Base Prompt</label>
+        
+        {/* Show connected prompt info */}
+        {incomingPromptText && !data.basePrompt && (
+          <div className="mb-2 rounded-lg border border-violet-400/30 bg-violet-500/10 p-2 text-xs text-violet-300">
+            <div className="flex items-center gap-2">
+              <span>🔗</span>
+              <span className="font-medium">연결된 프롬프트 사용 중</span>
+            </div>
+            <div className="mt-1 text-[10px] text-violet-400/80 line-clamp-2">
+              "{incomingPromptText}"
+            </div>
+            <div className="mt-1 text-[9px] text-violet-400/60">
+              💡 직접 입력하면 연결된 프롬프트를 덮어씁니다
+            </div>
+          </div>
+        )}
+        
         <textarea
           {...basePromptIME}
           className="h-24 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-          placeholder="Enter base prompt..."
+          placeholder={incomingPromptText ? "연결된 프롬프트 사용 중 (입력하면 오버라이드)" : "Enter base prompt..."}
         />
       </div>
 
@@ -194,6 +408,337 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
             </option>
           ))}
         </select>
+      </div>
+
+      {/* 🎥 Camera Control Section */}
+      <div className="border-t border-white/10 pt-4 mt-4">
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-sm font-medium text-fuchsia-400">🎥 Camera Control</span>
+          
+          {/* Keyframe Toggle */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={data.enableKeyframes || false}
+              onChange={(e) => updateCombined({ enableKeyframes: e.target.checked })}
+              className="w-4 h-4 rounded border-white/20 bg-white/5 text-blue-500 focus:ring-2 focus:ring-blue-500/50"
+            />
+            <span className="text-xs text-slate-300">🎬 Keyframes</span>
+          </label>
+        </div>
+
+        {/* 3D Preview */}
+        <div className="mb-4">
+          <CameraPreview3D
+            rotation={data.cameraRotation || 0}
+            tilt={data.cameraTilt || 0}
+            distance={data.cameraDistance || 1.0}
+            enableKeyframes={data.enableKeyframes || false}
+            startRotation={data.startRotation || 0}
+            startTilt={data.startTilt || 0}
+            startDistance={data.startDistance || 1.0}
+            endRotation={data.endRotation || 0}
+            endTilt={data.endTilt || 0}
+            endDistance={data.endDistance || 1.0}
+            onStartFrameChange={(rotation, tilt, distance) => {
+              updateCombined({ 
+                startRotation: rotation, 
+                startTilt: tilt, 
+                startDistance: distance 
+              })
+            }}
+            onEndFrameChange={(rotation, tilt, distance) => {
+              updateCombined({ 
+                endRotation: rotation, 
+                endTilt: tilt, 
+                endDistance: distance 
+              })
+            }}
+            onRotationChange={(rotation) => {
+              updateCombined({ cameraRotation: rotation })
+            }}
+            onTiltChange={(tilt) => {
+              updateCombined({ cameraTilt: tilt })
+            }}
+            onDistanceChange={(distance) => {
+              updateCombined({ cameraDistance: distance })
+            }}
+          />
+        </div>
+
+        {/* Preset Buttons (360도 시스템) */}
+        <div className="mb-4">
+          <label className="mb-2 block text-xs font-medium text-slate-400">Quick Presets</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => updateCombined({ cameraRotation: 0, cameraTilt: 0, cameraDistance: 1.0 })}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+            >
+              🎬 Front (0°)
+            </button>
+            <button
+              onClick={() => updateCombined({ cameraRotation: 90, cameraTilt: 0, cameraDistance: 1.0 })}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+            >
+              ▶️ Right Side (90°)
+            </button>
+            <button
+              onClick={() => updateCombined({ cameraRotation: 180, cameraTilt: 0, cameraDistance: 1.0 })}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+            >
+              🔄 Back (180°)
+            </button>
+            <button
+              onClick={() => updateCombined({ cameraRotation: 270, cameraTilt: 0, cameraDistance: 1.0 })}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+            >
+              ◀️ Left Side (270°)
+            </button>
+            <button
+              onClick={() => updateCombined({ cameraRotation: 45, cameraTilt: 0, cameraDistance: 1.0 })}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+            >
+              📐 3/4 Right (45°)
+            </button>
+            <button
+              onClick={() => updateCombined({ cameraRotation: 315, cameraTilt: 0, cameraDistance: 1.0 })}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+            >
+              📐 3/4 Left (315°)
+            </button>
+          </div>
+        </div>
+
+        {/* Keyframe Controls or Single Controls */}
+        {data.enableKeyframes ? (
+          <>
+            {/* Start Frame Controls */}
+            <div className="border border-green-500/30 rounded-lg p-3 mb-4 bg-green-500/5">
+              <div className="text-xs font-semibold text-green-400 mb-3">🟢 Start Frame</div>
+              
+              {/* Start Rotation */}
+              <div className="mb-3">
+                <label className="mb-1 block text-[10px] font-medium text-slate-300 flex justify-between">
+                  <span>Rotation</span>
+                  <span className="text-green-400">{(data.startRotation || 0).toFixed(2)}°</span>
+                </label>
+                <input
+                  type="range"
+                  min="-90"
+                  max="90"
+                  step="5"
+                  value={data.startRotation || 0}
+                  onChange={(e) => updateCombined({ startRotation: Number(e.target.value) })}
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-green-500"
+                />
+              </div>
+
+              {/* Start Tilt */}
+              <div className="mb-3">
+                <label className="mb-1 block text-[10px] font-medium text-slate-300 flex justify-between">
+                  <span>Tilt</span>
+                  <span className="text-green-400">{(data.startTilt || 0).toFixed(2)}°</span>
+                </label>
+                <input
+                  type="range"
+                  min="-45"
+                  max="45"
+                  step="5"
+                  value={data.startTilt || 0}
+                  onChange={(e) => updateCombined({ startTilt: Number(e.target.value) })}
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-green-500"
+                />
+              </div>
+
+              {/* Start Distance */}
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-slate-300 flex justify-between">
+                  <span>Distance</span>
+                  <span className="text-green-400">{(data.startDistance || 1.0).toFixed(2)}x</span>
+                </label>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.1"
+                  value={data.startDistance || 1.0}
+                  onChange={(e) => updateCombined({ startDistance: Number(e.target.value) })}
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-green-500"
+                />
+              </div>
+            </div>
+
+            {/* End Frame Controls */}
+            <div className="border border-red-500/30 rounded-lg p-3 mb-4 bg-red-500/5">
+              <div className="text-xs font-semibold text-red-400 mb-3">🔴 End Frame</div>
+              
+              {/* End Rotation */}
+              <div className="mb-3">
+                <label className="mb-1 block text-[10px] font-medium text-slate-300 flex justify-between">
+                  <span>Rotation</span>
+                  <span className="text-red-400">{(data.endRotation || 0).toFixed(2)}°</span>
+                </label>
+                <input
+                  type="range"
+                  min="-90"
+                  max="90"
+                  step="5"
+                  value={data.endRotation || 0}
+                  onChange={(e) => updateCombined({ endRotation: Number(e.target.value) })}
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-red-500"
+                />
+              </div>
+
+              {/* End Tilt */}
+              <div className="mb-3">
+                <label className="mb-1 block text-[10px] font-medium text-slate-300 flex justify-between">
+                  <span>Tilt</span>
+                  <span className="text-red-400">{(data.endTilt || 0).toFixed(2)}°</span>
+                </label>
+                <input
+                  type="range"
+                  min="-45"
+                  max="45"
+                  step="5"
+                  value={data.endTilt || 0}
+                  onChange={(e) => updateCombined({ endTilt: Number(e.target.value) })}
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-red-500"
+                />
+              </div>
+
+              {/* End Distance */}
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-slate-300 flex justify-between">
+                  <span>Distance</span>
+                  <span className="text-red-400">{(data.endDistance || 1.0).toFixed(2)}x</span>
+                </label>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.1"
+                  value={data.endDistance || 1.0}
+                  onChange={(e) => updateCombined({ endDistance: Number(e.target.value) })}
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-red-500"
+                />
+              </div>
+            </div>
+
+            {/* Keyframe Presets */}
+            <div className="mb-4">
+              <label className="mb-2 block text-xs font-medium text-slate-400">Animation Presets</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => updateCombined({ 
+                    startRotation: -45, startTilt: 0, startDistance: 1.0,
+                    endRotation: 45, endTilt: 0, endDistance: 1.0
+                  })}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+                >
+                  Pan Left→Right
+                </button>
+                <button
+                  onClick={() => updateCombined({ 
+                    startRotation: 0, startTilt: 30, startDistance: 1.5,
+                    endRotation: 0, endTilt: -30, endDistance: 1.0
+                  })}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+                >
+                  Crane Shot
+                </button>
+                <button
+                  onClick={() => updateCombined({ 
+                    startRotation: 0, startTilt: 0, startDistance: 2.0,
+                    endRotation: 0, endTilt: 0, endDistance: 0.8
+                  })}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+                >
+                  Zoom In
+                </button>
+                <button
+                  onClick={() => updateCombined({ 
+                    startRotation: -30, startTilt: -15, startDistance: 1.2,
+                    endRotation: 30, endTilt: 15, endDistance: 0.9
+                  })}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 transition-colors"
+                >
+                  Orbit
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Single Frame Controls (Original) */}
+            {/* Rotation Slider (360도 시스템) */}
+            <div className="mb-4">
+              <label className="mb-2 block text-xs font-medium text-slate-300 flex justify-between">
+                <span>🔄 Rotation (360° 회전)</span>
+                <span className="text-fuchsia-400">{(data.cameraRotation || 0).toFixed(0)}°</span>
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="360"
+                step="15"
+                value={data.cameraRotation || 0}
+                onChange={(e) => updateCombined({ cameraRotation: Number(e.target.value) })}
+                className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-fuchsia-500"
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                <span>0° Front</span>
+                <span>90° Right</span>
+                <span>180° Back</span>
+                <span>270° Left</span>
+                <span>360°</span>
+              </div>
+            </div>
+
+            {/* Tilt Slider */}
+            <div className="mb-4">
+              <label className="mb-2 block text-xs font-medium text-slate-300 flex justify-between">
+                <span>🟣 Tilt (상하)</span>
+                <span className="text-fuchsia-400">{(data.cameraTilt || 0).toFixed(2)}°</span>
+              </label>
+              <input
+                type="range"
+                min="-45"
+                max="45"
+                step="5"
+                value={data.cameraTilt || 0}
+                onChange={(e) => updateCombined({ cameraTilt: Number(e.target.value) })}
+                className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-fuchsia-500"
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                <span>↑ Low -45°</span>
+                <span>Eye Level</span>
+                <span>High +45° ↓</span>
+              </div>
+            </div>
+
+            {/* Distance Slider */}
+            <div className="mb-4">
+              <label className="mb-2 block text-xs font-medium text-slate-300 flex justify-between">
+                <span>🟡 Distance (거리/줌)</span>
+                <span className="text-fuchsia-400">{(data.cameraDistance || 1.0).toFixed(2)}x</span>
+              </label>
+              <input
+                type="range"
+                min="0.5"
+                max="2.0"
+                step="0.1"
+                value={data.cameraDistance || 1.0}
+                onChange={(e) => updateCombined({ cameraDistance: Number(e.target.value) })}
+                className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-fuchsia-500"
+              />
+              <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                <span>Close 0.5x</span>
+                <span>Normal</span>
+                <span>Wide 2.0x</span>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <div>
@@ -2376,8 +2921,23 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
       const imageElements: { [key: string]: HTMLImageElement } = {}
       
       for (const slot of data.slots) {
-        const imageUrl = data.inputImages[slot.id]
+        let imageUrl = data.inputImages[slot.id]
         if (!imageUrl) continue
+
+        // 🔧 idb: 또는 s3: 참조를 실제 DataURL로 변환
+        if (imageUrl.startsWith('idb:') || imageUrl.startsWith('s3:')) {
+          try {
+            const { getImage } = await import('../utils/indexedDB')
+            const resolvedUrl = await getImage(imageUrl)
+            if (!resolvedUrl) {
+              throw new Error(`이미지를 로드할 수 없습니다: ${slot.id}`)
+            }
+            imageUrl = resolvedUrl
+          } catch (error) {
+            console.error(`❌ 이미지 로드 실패 (${slot.id}):`, error)
+            throw new Error(`이미지를 로드할 수 없습니다: ${slot.id}`)
+          }
+        }
 
         const img = new Image()
         img.crossOrigin = 'anonymous'
@@ -2391,16 +2951,45 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
         imageElements[slot.id] = img
       }
 
-      // Determine cell size (use first image as reference)
-      const firstImg = imageElements[data.slots[0].id]
-      const cellWidth = firstImg.width
-      const cellHeight = firstImg.height
+      // 🎯 각 이미지를 여백 없이 꽉 채우기: 공통 높이, 각 비율 유지
+      
+      // 목표 높이 설정 (모든 이미지의 높이를 동일하게)
+      const targetHeight = 1024
+      
+      // 각 슬롯별로 개별 셀 크기 계산 (높이는 동일, 너비는 비율에 따라)
+      const cellSizes: { [slotId: string]: { width: number; height: number } } = {}
+      
+      for (const slot of data.slots) {
+        const img = imageElements[slot.id]
+        if (img) {
+          const aspectRatio = img.width / img.height
+          const adjustedWidth = Math.round(targetHeight * aspectRatio)
+          
+          cellSizes[slot.id] = {
+            width: adjustedWidth,
+            height: targetHeight
+          }
+        }
+      }
+      
+      // 공통 높이 (모든 셀이 동일)
+      const cellHeight = targetHeight
+
+      // 🎨 라벨 바 높이 계산 (라벨을 표시하는 경우)
+      const labelBarHeight = data.showLabels ? data.labelSize + 16 : 0  // 텍스트 크기 + 패딩
+      const actualCellHeight = cellHeight + labelBarHeight  // 이미지 + 라벨 바
 
       // Calculate grid dimensions
       const borderWidth = data.showBorders ? data.borderWidth : 0
       const padding = data.cellPadding
-      const totalWidth = cols * cellWidth + (cols + 1) * borderWidth + 2 * padding
-      const totalHeight = rows * cellHeight + (rows + 1) * borderWidth + 2 * padding
+      
+      // 각 셀의 너비 합계 계산
+      const totalCellWidth = data.slots.reduce((sum, slot) => {
+        return sum + (cellSizes[slot.id]?.width || 0)
+      }, 0)
+      
+      const totalWidth = totalCellWidth + (cols + 1) * borderWidth + 2 * padding
+      const totalHeight = rows * actualCellHeight + (rows + 1) * borderWidth + 2 * padding
 
       // Create canvas
       const canvas = document.createElement('canvas')
@@ -2417,6 +3006,8 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
       ctx.fillRect(0, 0, totalWidth, totalHeight)
 
       // Draw grid
+      let currentX = padding + borderWidth  // 누적 X 위치
+      
       for (let i = 0; i < data.slots.length; i++) {
         const slot = data.slots[i]
         const row = Math.floor(i / cols)
@@ -2425,97 +3016,70 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
 
         if (!img) continue
 
+        // 이 셀의 개별 크기
+        const cellWidth = cellSizes[slot.id]?.width || targetHeight
+        
         // Calculate position
-        const x = padding + col * (cellWidth + borderWidth) + borderWidth
-        const y = padding + row * (cellHeight + borderWidth) + borderWidth
+        const x = currentX
+        const y = padding + row * (actualCellHeight + borderWidth) + borderWidth
 
-        // Draw cell background (if borders)
+        // Draw cell background (if borders) - 전체 셀 높이 포함
         if (data.showBorders) {
           ctx.fillStyle = data.borderColor
           ctx.fillRect(
             x - borderWidth,
             y - borderWidth,
             cellWidth + 2 * borderWidth,
-            cellHeight + 2 * borderWidth
+            actualCellHeight + 2 * borderWidth
           )
         }
 
-        // Draw image based on aspect ratio mode
-        const imgAspect = img.width / img.height
-        const cellAspect = cellWidth / cellHeight
+        // 각 이미지를 여백 없이 꽉 채움 (비율 유지)
+        ctx.drawImage(img, x, y, cellWidth, cellHeight)
+        
+        // 다음 셀의 X 위치 업데이트
+        currentX += cellWidth + borderWidth
 
-        if (data.aspectRatioMode === 'stretch') {
-          // Stretch: 비율 무시하고 셀 크기에 맞춤
-          ctx.drawImage(img, x, y, cellWidth, cellHeight)
-        } else if (data.aspectRatioMode === 'contain') {
-          // Contain: 비율 유지하며 셀 안에 맞춤 (여백 생김)
-          let drawWidth, drawHeight, drawX, drawY
-          
-          if (imgAspect > cellAspect) {
-            // 이미지가 더 넓음 -> 너비를 셀에 맞춤
-            drawWidth = cellWidth
-            drawHeight = cellWidth / imgAspect
-            drawX = x
-            drawY = y + (cellHeight - drawHeight) / 2
-          } else {
-            // 이미지가 더 높음 -> 높이를 셀에 맞춤
-            drawHeight = cellHeight
-            drawWidth = cellHeight * imgAspect
-            drawX = x + (cellWidth - drawWidth) / 2
-            drawY = y
-          }
-          
-          ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight)
-        } else if (data.aspectRatioMode === 'cover') {
-          // Cover: 비율 유지하며 셀을 꽉 채움 (잘림 발생)
-          let drawWidth, drawHeight, drawX, drawY
-          
-          if (imgAspect > cellAspect) {
-            // 이미지가 더 넓음 -> 높이를 셀에 맞춤
-            drawHeight = cellHeight
-            drawWidth = cellHeight * imgAspect
-            drawX = x + (cellWidth - drawWidth) / 2
-            drawY = y
-          } else {
-            // 이미지가 더 높음 -> 너비를 셀에 맞춤
-            drawWidth = cellWidth
-            drawHeight = cellWidth / imgAspect
-            drawX = x
-            drawY = y + (cellHeight - drawHeight) / 2
-          }
-          
-          // Clip to cell area
-          ctx.save()
-          ctx.beginPath()
-          ctx.rect(x, y, cellWidth, cellHeight)
-          ctx.clip()
-          ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight)
-          ctx.restore()
-        }
-
-        // Draw label
+        // 🎨 이미지 아래에 라벨 바 그리기
         if (data.showLabels) {
+          // 검은색 라벨 바
+          const labelBarY = y + cellHeight
+          ctx.fillStyle = '#000000'
+          ctx.fillRect(x, labelBarY, cellWidth, labelBarHeight)
+          
+          // 흰색 텍스트
           ctx.font = `bold ${data.labelSize}px Arial`
-          ctx.fillStyle = data.labelColor
-          ctx.strokeStyle = data.labelColor === '#ffffff' ? '#000000' : '#ffffff'
-          ctx.lineWidth = 2
+          ctx.fillStyle = '#ffffff'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
           
           const text = slot.id
-          const textX = x + 10
-          const textY = y + data.labelSize + 5
+          const textX = x + cellWidth / 2
+          const textY = labelBarY + labelBarHeight / 2
 
-          ctx.strokeText(text, textX, textY)
           ctx.fillText(text, textX, textY)
+          
+          // 텍스트 정렬 리셋
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'alphabetic'
         }
       }
 
       // Convert to data URL
       const composedDataUrl = canvas.toDataURL('image/png')
 
+      // 🔥 IndexedDB에 저장 (localStorage 용량 절약)
+      const { saveImage } = await import('../utils/indexedDB')
+      const imageId = `grid-composed-${node.id}-${Date.now()}`
+      console.log('💾 Grid Composer: IndexedDB/S3에 저장 시작...', imageId)
+      
+      const savedRef = await saveImage(imageId, composedDataUrl, node.id, false)
+      console.log('✅ Grid Composer: 저장 완료', savedRef)
+
       updateNodeData(node.id, {
         status: 'completed',
-        composedImageDataUrl: composedDataUrl,
-        composedImageUrl: composedDataUrl,
+        composedImageDataUrl: savedRef,  // idb:abc-123 형태
+        composedImageUrl: savedRef,
       } as any)
     } catch (error: any) {
       updateNodeData(node.id, {
@@ -2763,9 +3327,46 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
   const data = node.data as any  // LLMPromptNodeData
   const runLLMPromptNode = useFlowStore((state: any) => state.runLLMPromptNode)
   const edges = useFlowStore((state) => state.edges)
+  const [displayReferenceImage, setDisplayReferenceImage] = useState<string | undefined>(undefined)
+  
+  // Load reference image from IndexedDB/S3 if needed
+  useEffect(() => {
+    const loadReferenceImage = async () => {
+      const imageRef = data.referenceImageDataUrl || data.referenceImageUrl
+      
+      if (!imageRef) {
+        setDisplayReferenceImage(undefined)
+        return
+      }
+
+      // If it's an idb: or s3: reference, fetch the actual image
+      if (typeof imageRef === 'string' && (imageRef.startsWith('idb:') || imageRef.startsWith('s3:'))) {
+        try {
+          const dataURL = await getImage(imageRef)
+          if (dataURL) {
+            setDisplayReferenceImage(dataURL)
+          } else {
+            console.warn('⚠️ LLM Inspector: Failed to load reference image:', imageRef)
+            setDisplayReferenceImage(undefined)
+          }
+        } catch (error) {
+          console.error('❌ LLM Inspector: Error loading reference image:', error)
+          setDisplayReferenceImage(undefined)
+        }
+      } else {
+        // Direct data URL or regular URL
+        setDisplayReferenceImage(imageRef)
+      }
+    }
+
+    loadReferenceImage()
+  }, [data.referenceImageUrl, data.referenceImageDataUrl])
   
   // Check if there's a prompt or image connection
-  const hasPromptConnection = edges.some((e) => e.target === node.id && e.targetHandle === 'prompt')
+  const hasBasePromptConnection = edges.some((e) => e.target === node.id && e.targetHandle === 'basePrompt')
+  const hasMotionPromptConnection = edges.some((e) => e.target === node.id && e.targetHandle === 'motionPrompt')
+  const hasLegacyPromptConnection = edges.some((e) => e.target === node.id && e.targetHandle === 'prompt')
+  const hasAnyPromptConnection = hasBasePromptConnection || hasMotionPromptConnection || hasLegacyPromptConnection
   const hasImageConnection = edges.some((e) => e.target === node.id && e.targetHandle === 'image')
   
   // Button should be enabled if:
@@ -2774,7 +3375,7 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
   const canGenerate = 
     (data.mode === 'describe' || data.mode === 'analyze') 
       ? hasImageConnection 
-      : (hasPromptConnection || data.inputPrompt?.trim() || hasImageConnection)
+      : (hasAnyPromptConnection || data.inputPrompt?.trim() || hasImageConnection)
 
   const handleGenerate = async () => {
     // Validation is now handled in runLLMPromptNode
@@ -2785,35 +3386,64 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
     <div className="space-y-4">
       {/* Connection Status */}
       <div className="space-y-2">
-        {/* Prompt Connection */}
+        {/* Base Prompt Connection */}
         <div className={`rounded-lg border px-3 py-2 ${
-          hasPromptConnection 
+          hasBasePromptConnection 
             ? 'border-green-400/30 bg-green-500/5' 
-            : 'border-pink-400/20 bg-pink-500/5'
+            : 'border-violet-400/20 bg-violet-500/5'
         }`}>
           <div className="flex items-center justify-between mb-1">
-            <div className="text-xs font-medium text-pink-400">📝 프롬프트 입력</div>
-            {hasPromptConnection && (
+            <div className="text-xs font-medium text-violet-400">📝 기본 프롬프트</div>
+            {hasBasePromptConnection && (
               <div className="text-[9px] text-green-400 flex items-center gap-1">
                 <div className="w-1.5 h-1.5 rounded-full bg-green-400"></div>
                 연결됨
               </div>
             )}
           </div>
-          {!hasPromptConnection && (
+          {!hasBasePromptConnection && (
             <div className="text-[11px] text-slate-400">
-              Text Prompt 노드를 상단 (분홍) 핸들에 연결하세요
-            </div>
-          )}
-          {data.inputPrompt && (
-            <div className="mt-2 pt-2 border-t border-pink-400/20">
-              <div className="text-[9px] text-slate-400 mb-1">프롬프트 미리보기:</div>
-              <div className="text-[10px] text-slate-300 line-clamp-3 bg-black/20 rounded p-2">
-                {data.inputPrompt}
-              </div>
+              Text Prompt 노드를 상단 (보라) 핸들에 연결 (선택)
             </div>
           )}
         </div>
+        
+        {/* Motion Prompt Connection */}
+        <div className={`rounded-lg border px-3 py-2 ${
+          hasMotionPromptConnection 
+            ? 'border-green-400/30 bg-green-500/5' 
+            : 'border-fuchsia-400/20 bg-fuchsia-500/5'
+        }`}>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs font-medium text-fuchsia-400">🎬 모션 프롬프트</div>
+            {hasMotionPromptConnection && (
+              <div className="text-[9px] text-green-400 flex items-center gap-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-green-400"></div>
+                연결됨
+              </div>
+            )}
+          </div>
+          {!hasMotionPromptConnection && (
+            <div className="text-[11px] text-slate-400">
+              Motion Prompt 노드를 중간 (분홍) 핸들에 연결 (선택)
+            </div>
+          )}
+          {hasMotionPromptConnection && data.mode === 'cameraInterpreter' && (
+            <div className="mt-2 pt-2 border-t border-fuchsia-400/20">
+              <div className="text-[9px] text-green-400">✨ 카메라 수치를 시각적 설명으로 변환합니다</div>
+            </div>
+          )}
+        </div>
+        
+        {/* Internal Input Preview */}
+        {data.inputPrompt && (
+          <div className="rounded-lg border border-pink-400/20 bg-pink-500/5 px-3 py-2">
+            <div className="text-[9px] text-slate-400 mb-1">내부 입력 프롬프트:</div>
+            <div className="text-[10px] text-slate-300 line-clamp-3 bg-black/20 rounded p-2">
+              {data.inputPrompt}
+            </div>
+          </div>
+        )}
         
         {/* Image Connection */}
         <div className={`rounded-lg border px-3 py-2 ${
@@ -2838,6 +3468,49 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
         </div>
       </div>
 
+      {/* Provider Selection */}
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">🤖 LLM Provider</label>
+        <select
+          value={data.provider || 'gemini'}
+          onChange={(e) => {
+            const newProvider = e.target.value as 'gemini' | 'openai'
+            const defaultModel = newProvider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o'
+            updateNodeData(node.id, { provider: newProvider, model: defaultModel } as any)
+          }}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-pink-500/50 focus:outline-none focus:ring-1 focus:ring-pink-500/50"
+        >
+          <option value="gemini">🔵 Gemini (Google)</option>
+          <option value="openai">🟢 OpenAI (GPT)</option>
+        </select>
+      </div>
+
+      {/* Model Selection */}
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">🧠 Model</label>
+        <select
+          value={data.model}
+          onChange={(e) => updateNodeData(node.id, { model: e.target.value } as any)}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-pink-500/50 focus:outline-none focus:ring-1 focus:ring-pink-500/50"
+        >
+          {(data.provider === 'gemini' || !data.provider) && (
+            <>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (빠름, 권장)</option>
+              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (가장 빠름)</option>
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro (가장 강력)</option>
+            </>
+          )}
+          {data.provider === 'openai' && (
+            <>
+              <option value="gpt-4o">GPT-4o (Vision, 최신, 권장) ⭐</option>
+              <option value="gpt-4o-mini">GPT-4o-mini (Vision, 빠름, 저렴)</option>
+              <option value="gpt-4-turbo">GPT-4 Turbo (강력)</option>
+              <option value="gpt-3.5-turbo">GPT-3.5 Turbo (가장 저렴)</option>
+            </>
+          )}
+        </select>
+      </div>
+
       {/* Mode Selection */}
       <div>
         <label className="mb-2 block text-sm font-medium text-slate-300">처리 모드</label>
@@ -2846,32 +3519,52 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
           onChange={(e) => updateNodeData(node.id, { mode: e.target.value } as any)}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-pink-500/50 focus:outline-none focus:ring-1 focus:ring-pink-500/50"
         >
-          <optgroup label="텍스트 기반">
+          <optgroup label="프롬프트 작업 (이미지 자동 참고)">
             <option value="expand">📝 확장 - 간단한 아이디어를 상세 프롬프트로</option>
             <option value="improve">✨ 개선 - 기존 프롬프트를 더 효과적으로</option>
             <option value="translate">🌐 번역 - 한국어 ↔ 영어</option>
             <option value="simplify">🎯 간결화 - 핵심만 간단하게</option>
           </optgroup>
-          <optgroup label="이미지 기반">
+          <optgroup label="특수 작업">
+            <option value="cameraInterpreter">🎬 카메라 지시 해석 - 수치를 시각적 설명으로 변환 ⭐</option>
+          </optgroup>
+          <optgroup label="이미지 전용 분석">
             <option value="describe">🖼️ 이미지 설명 - 이미지를 프롬프트로 변환</option>
             <option value="analyze">🔍 이미지 분석 - 상세한 이미지 분석 프롬프트</option>
           </optgroup>
         </select>
+        <div className="mt-2 rounded-lg border border-pink-400/20 bg-pink-500/5 p-2 text-[11px] text-pink-300">
+          {data.mode === 'cameraInterpreter' ? (
+            <>🎬 <strong>카메라 해석 모드:</strong> Motion Prompt의 수치를 이미지 생성에 최적화된 상세한 시각적 설명으로 변환합니다!</>
+          ) : (
+            <>💡 <strong>멀티모달 지원:</strong> 프롬프트 작업 모드는 이미지가 연결되면 자동으로 참고합니다!</>
+          )}
+        </div>
       </div>
       
       {/* Reference Image Info */}
-      {data.referenceImageUrl && (
+      {(data.referenceImageUrl || data.referenceImageDataUrl) && (
         <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/5 px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-xs text-cyan-400">🖼️ 참고 이미지 연결됨</span>
           </div>
-          <div className="mt-2 rounded overflow-hidden">
-            <img
-              src={data.referenceImageUrl}
-              alt="Reference"
-              className="w-full"
-            />
-          </div>
+          {displayReferenceImage ? (
+            <div className="mt-2 rounded overflow-hidden">
+              <img
+                src={displayReferenceImage}
+                alt="Reference"
+                className="w-full"
+                onError={(e) => {
+                  console.error('❌ LLM Inspector: Image display error')
+                  e.currentTarget.style.display = 'none'
+                }}
+              />
+            </div>
+          ) : (
+            <div className="mt-2 rounded border border-cyan-400/20 bg-cyan-500/5 px-2 py-3 text-center">
+              <div className="text-[10px] text-cyan-400">이미지 로딩 중...</div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2918,6 +3611,30 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
         </select>
       </div>
 
+      {/* Reference Mode (Grid Composer 연결시) */}
+      {hasImageConnection && edges.some(e => {
+        const sourceNode = useFlowStore.getState().nodes.find(n => n.id === e.source)
+        return e.target === node.id && e.targetHandle === 'image' && sourceNode?.type === 'gridComposer'
+      }) && (
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300">🎯 참조 정확도 (Nano Banana 생성용)</label>
+          <select
+            value={data.referenceMode || 'exact'}
+            onChange={(e) => updateNodeData(node.id, { referenceMode: e.target.value } as any)}
+            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-pink-500/50 focus:outline-none focus:ring-1 focus:ring-pink-500/50"
+          >
+            <option value="creative">🎨 창의성 - 텍스트 프롬프트 위주</option>
+            <option value="balanced">⚖️ 균형 - 텍스트와 이미지 균형</option>
+            <option value="exact">🎯 정확성 - 참조 이미지 PIXEL-LEVEL 복제 (권장)</option>
+          </select>
+          <div className="mt-2 rounded-lg border border-pink-400/20 bg-pink-500/5 p-2 text-[11px] text-pink-300">
+            {data.referenceMode === 'creative' && '💡 참조 이미지는 영감으로만 사용. 텍스트 설명을 기반으로 창의적으로 생성합니다.'}
+            {data.referenceMode === 'balanced' && '💡 텍스트와 이미지를 균형있게 참고하여 생성합니다.'}
+            {(!data.referenceMode || data.referenceMode === 'exact') && '💡 참조 이미지의 색상, 재질, 디자인을 정확히 복제합니다. (프로 작업 권장)'}
+          </div>
+        </div>
+      )}
+
       {/* Model Selection */}
       <div>
         <label className="mb-2 block text-sm font-medium text-slate-300">LLM 모델</label>
@@ -2926,9 +3643,9 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
           onChange={(e) => updateNodeData(node.id, { model: e.target.value } as any)}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-pink-500/50 focus:outline-none focus:ring-1 focus:ring-pink-500/50"
         >
-          <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash (빠름)</option>
-          <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-          <option value="gemini-1.5-pro">Gemini 1.5 Pro (정확)</option>
+          <option value="gemini-2.5-flash">Gemini 2.5 Flash (추천)</option>
+          <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (빠름)</option>
+          <option value="gemini-2.5-pro">Gemini 2.5 Pro (고급)</option>
         </select>
       </div>
 

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>localStorage 정리 도구</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #0f141a;
+            color: #e2e8f0;
+        }
+        button {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #059669;
+        }
+        button.danger {
+            background: #ef4444;
+        }
+        button.danger:hover {
+            background: #dc2626;
+        }
+        .info {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            border: 1px solid #334155;
+        }
+        .log {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        h1 { color: #10b981; }
+        h2 { color: #60a5fa; }
+    </style>
+</head>
+<body>
+    <h1>🗄️ localStorage 정리 도구</h1>
+    
+    <div class="info" id="info">
+        <h2>📊 현재 상태</h2>
+        <p id="status">확인 중...</p>
+    </div>
+
+    <div>
+        <h2>🛠️ 작업</h2>
+        <button onclick="checkStorage()">📊 용량 확인</button>
+        <button onclick="backupWorkflow()">💾 백업 (Export)</button>
+        <button class="danger" onclick="clearStorage()">🗑️ localStorage 정리</button>
+    </div>
+
+    <div class="log" id="log"></div>
+
+    <script>
+        function log(message) {
+            const logEl = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            logEl.innerHTML += `[${time}] ${message}<br>`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function checkStorage() {
+            let total = 0;
+            const items = [];
+            
+            for (let key in localStorage) {
+                if (localStorage.hasOwnProperty(key)) {
+                    const size = (localStorage[key].length + key.length) * 2;
+                    total += size;
+                    items.push({
+                        key,
+                        sizeMB: (size / 1024 / 1024).toFixed(2),
+                        size
+                    });
+                }
+            }
+
+            items.sort((a, b) => b.size - a.size);
+
+            const mb = (total / 1024 / 1024).toFixed(2);
+            const limit = 5;
+            const percentage = Math.min((total / (limit * 1024 * 1024)) * 100, 100);
+
+            document.getElementById('status').innerHTML = `
+                <strong>총 사용량:</strong> ${mb} MB / ${limit} MB (${percentage.toFixed(1)}%)<br><br>
+                <strong>항목별 크기:</strong><br>
+                ${items.map(item => `&nbsp;&nbsp;• ${item.key}: ${item.sizeMB} MB`).join('<br>')}
+            `;
+
+            log(`📊 용량 확인: ${mb} MB (${percentage.toFixed(1)}%)`);
+            items.forEach(item => {
+                log(`&nbsp;&nbsp;• ${item.key}: ${item.sizeMB} MB`);
+            });
+        }
+
+        function backupWorkflow() {
+            const data = localStorage.getItem('nano-banana-workflow-v3');
+            if (!data) {
+                alert('⚠️ 저장된 워크플로우가 없습니다!');
+                return;
+            }
+
+            try {
+                // Parse and format
+                const parsed = JSON.parse(data);
+                const formatted = JSON.stringify(parsed, null, 2);
+                
+                // Download
+                const blob = new Blob([formatted], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `workflow-backup-${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                log('✅ 백업 완료!');
+                alert('✅ 백업이 다운로드되었습니다!');
+            } catch (error) {
+                log(`❌ 백업 실패: ${error.message}`);
+                alert('❌ 백업 실패: ' + error.message);
+            }
+        }
+
+        function clearStorage() {
+            if (!confirm('⚠️ 정말 localStorage를 정리하시겠습니까?\n\n백업을 먼저 하셨나요?')) {
+                return;
+            }
+
+            if (!confirm('⚠️⚠️ 마지막 확인!\n\n모든 이미지와 워크플로우 데이터가 삭제됩니다.\n백업 파일이 있나요?')) {
+                return;
+            }
+
+            try {
+                const keys = Object.keys(localStorage);
+                log(`🗑️ ${keys.length}개 항목 삭제 중...`);
+                
+                localStorage.clear();
+                
+                log('✅ localStorage 정리 완료!');
+                alert('✅ 정리 완료!\n\n이제 앱을 새로고침하세요.');
+                
+                checkStorage();
+            } catch (error) {
+                log(`❌ 정리 실패: ${error.message}`);
+                alert('❌ 정리 실패: ' + error.message);
+            }
+        }
+
+        // 자동 확인
+        window.onload = function() {
+            checkStorage();
+            log('🚀 localStorage 정리 도구 시작');
+        };
+    </script>
+</body>
+</html>
