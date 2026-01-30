@@ -199,27 +199,32 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
       
       if (normalizedAngle === 0 || normalizedAngle === 360) {
         // 0° = Front view (프롬프트에 추가 안 함)
-      } else if (normalizedAngle > 0 && normalizedAngle < 90) {
-        // 0-90°: Front-right
-        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+      } else if (normalizedAngle > 0 && normalizedAngle <= 30) {
+        cameraAngles.push(`slight three-quarter left view`)
+      } else if (normalizedAngle > 30 && normalizedAngle < 60) {
+        cameraAngles.push(`three-quarter left view`)
+      } else if (normalizedAngle >= 60 && normalizedAngle < 90) {
+        cameraAngles.push(`left side three-quarter view`)
       } else if (normalizedAngle === 90) {
-        // 90°: Right side
-        cameraAngles.push(`right side view 90°`)
-      } else if (normalizedAngle > 90 && normalizedAngle < 180) {
-        // 90-180°: Back-right
-        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
-      } else if (normalizedAngle === 180) {
-        // 180°: Back view
-        cameraAngles.push(`back view 180°`)
-      } else if (normalizedAngle > 180 && normalizedAngle < 270) {
-        // 180-270°: Back-left
-        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        cameraAngles.push(`left side profile`)
+      } else if (normalizedAngle > 90 && normalizedAngle < 120) {
+        cameraAngles.push(`left three-quarter back view`)
+      } else if (normalizedAngle >= 120 && normalizedAngle < 165) {
+        cameraAngles.push(`three-quarter back view from left`)
+      } else if (normalizedAngle >= 165 && normalizedAngle <= 195) {
+        cameraAngles.push(`back view`)
+      } else if (normalizedAngle > 195 && normalizedAngle < 240) {
+        cameraAngles.push(`three-quarter back view from right`)
+      } else if (normalizedAngle >= 240 && normalizedAngle < 270) {
+        cameraAngles.push(`right three-quarter back view`)
       } else if (normalizedAngle === 270) {
-        // 270°: Left side
-        cameraAngles.push(`left side view 270°`)
+        cameraAngles.push(`right side profile`)
+      } else if (normalizedAngle > 270 && normalizedAngle < 300) {
+        cameraAngles.push(`right side three-quarter view`)
+      } else if (normalizedAngle >= 300 && normalizedAngle < 330) {
+        cameraAngles.push(`three-quarter right view`)
       } else {
-        // 270-360°: Front-left
-        cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        cameraAngles.push(`slight three-quarter right view`)
       }
     }
     
@@ -240,6 +245,17 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
         cameraAngles.push(`zoom out ${roundedDistance}x`)
       } else {
         cameraAngles.push(`zoom in ${roundedDistance}x`)
+      }
+    }
+    
+    // Add rotation subject context with Gemini-optimized terminology
+    if (updated.cameraRotation && updated.cameraRotation !== 0) {
+      if (updated.rotationSubject === 'camera-orbit') {
+        cameraAngles.push('camera positioned around subject')
+        cameraAngles.push('85mm portrait lens')
+      } else if (updated.rotationSubject === 'character-turn') {
+        cameraAngles.push('subject turns (background fixed)')
+        cameraAngles.push('50mm standard lens')
       }
     }
     
@@ -276,20 +292,32 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
         
         if (normalizedAngle === 0 || normalizedAngle === 360) {
           // Front view
-        } else if (normalizedAngle > 0 && normalizedAngle < 90) {
-          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+        } else if (normalizedAngle > 0 && normalizedAngle <= 30) {
+          cameraAngles.push(`slight three-quarter left view`)
+        } else if (normalizedAngle > 30 && normalizedAngle < 60) {
+          cameraAngles.push(`three-quarter left view`)
+        } else if (normalizedAngle >= 60 && normalizedAngle < 90) {
+          cameraAngles.push(`left side three-quarter view`)
         } else if (normalizedAngle === 90) {
-          cameraAngles.push(`right side view 90°`)
-        } else if (normalizedAngle > 90 && normalizedAngle < 180) {
-          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
-        } else if (normalizedAngle === 180) {
-          cameraAngles.push(`back view 180°`)
-        } else if (normalizedAngle > 180 && normalizedAngle < 270) {
-          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+          cameraAngles.push(`left side profile`)
+        } else if (normalizedAngle > 90 && normalizedAngle < 120) {
+          cameraAngles.push(`left three-quarter back view`)
+        } else if (normalizedAngle >= 120 && normalizedAngle < 165) {
+          cameraAngles.push(`three-quarter back view from left`)
+        } else if (normalizedAngle >= 165 && normalizedAngle <= 195) {
+          cameraAngles.push(`back view`)
+        } else if (normalizedAngle > 195 && normalizedAngle < 240) {
+          cameraAngles.push(`three-quarter back view from right`)
+        } else if (normalizedAngle >= 240 && normalizedAngle < 270) {
+          cameraAngles.push(`right three-quarter back view`)
         } else if (normalizedAngle === 270) {
-          cameraAngles.push(`left side view 270°`)
+          cameraAngles.push(`right side profile`)
+        } else if (normalizedAngle > 270 && normalizedAngle < 300) {
+          cameraAngles.push(`right side three-quarter view`)
+        } else if (normalizedAngle >= 300 && normalizedAngle < 330) {
+          cameraAngles.push(`three-quarter right view`)
         } else {
-          cameraAngles.push(`rotate ${normalizedAngle}° clockwise from front`)
+          cameraAngles.push(`slight three-quarter right view`)
         }
       }
       
@@ -311,6 +339,17 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
         }
       }
       
+      // Add rotation subject context with Gemini-optimized terminology (only if there's rotation)
+      if (data.cameraRotation && data.cameraRotation !== 0) {
+        if (data.rotationSubject === 'camera-orbit') {
+          cameraAngles.push('camera positioned around subject')
+          cameraAngles.push('85mm portrait lens')
+        } else if (data.rotationSubject === 'character-turn') {
+          cameraAngles.push('subject turns (background fixed)')
+          cameraAngles.push('50mm standard lens')
+        }
+      }
+      
       const combined = [
         incomingPromptText,
         data.cameraMovement,
@@ -326,7 +365,7 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
         updateNodeData(node.id, { combinedPrompt: combined })
       }
     }
-  }, [incomingPromptText, data.basePrompt, data.cameraRotation, data.cameraTilt, data.cameraDistance, data.cameraMovement, data.subjectMotion, data.lighting])
+  }, [incomingPromptText, data.basePrompt, data.cameraRotation, data.cameraTilt, data.cameraDistance, data.rotationSubject, data.cameraMovement, data.subjectMotion, data.lighting])
 
   const presets = {
     camera: ['Zoom In', 'Zoom Out', 'Pan Left', 'Pan Right', 'Orbit', 'Static'],
@@ -425,6 +464,46 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
             />
             <span className="text-xs text-slate-300">🎬 Keyframes</span>
           </label>
+        </div>
+
+        {/* Rotation Subject Selection */}
+        <div className="mb-4 rounded-lg border border-white/10 bg-white/5 p-3">
+          <label className="mb-2 block text-xs font-medium text-slate-400">Rotation Subject (회전 기준)</label>
+          <div className="mb-3 text-[10px] text-yellow-400/80 bg-yellow-500/10 border border-yellow-500/20 rounded px-2 py-1">
+            💡 대부분의 AI 모델은 Character Turn을 더 잘 이해합니다
+          </div>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <input
+                type="radio"
+                name="rotationSubject"
+                value="camera-orbit"
+                checked={data.rotationSubject === 'camera-orbit'}
+                onChange={(e) => updateCombined({ rotationSubject: e.target.value as 'camera-orbit' | 'character-turn' })}
+                className="w-4 h-4 text-blue-500 focus:ring-2 focus:ring-blue-500/50"
+              />
+              <div className="flex-1">
+                <div className="text-sm text-slate-200 group-hover:text-white transition">🎬 Camera Orbit</div>
+                <div className="text-[10px] text-slate-500">카메라가 인물 주위를 회전 (배경도 회전)</div>
+                <div className="text-[9px] text-slate-600 mt-0.5">⚠️ AI가 오해할 수 있음 - 고급 기능</div>
+              </div>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <input
+                type="radio"
+                name="rotationSubject"
+                value="character-turn"
+                checked={data.rotationSubject === 'character-turn'}
+                onChange={(e) => updateCombined({ rotationSubject: e.target.value as 'camera-orbit' | 'character-turn' })}
+                className="w-4 h-4 text-blue-500 focus:ring-2 focus:ring-blue-500/50"
+              />
+              <div className="flex-1">
+                <div className="text-sm text-slate-200 group-hover:text-white transition">🧍 Character Turn <span className="text-[9px] text-green-400">✓ 권장</span></div>
+                <div className="text-[10px] text-slate-500">인물만 회전 (배경 고정)</div>
+                <div className="text-[9px] text-green-600 mt-0.5">✓ AI가 가장 잘 이해하는 방식</div>
+              </div>
+            </label>
+          </div>
         </div>
 
         {/* 3D Preview */}

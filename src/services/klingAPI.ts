@@ -69,7 +69,10 @@ export class KlingAPIClient {
       const advancedCameraControl = settings.cameraControl
         ? {
             movement_type: settings.cameraControl.type,
-            movement_value: settings.cameraControl.value,
+            // 🔄 Roll의 경우 부호 반전 (Kling API에서 양수=반시계, 음수=시계 방향)
+            movement_value: settings.cameraControl.type === 'roll' 
+              ? -settings.cameraControl.value 
+              : settings.cameraControl.value,
           }
         : undefined
 

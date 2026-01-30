@@ -999,8 +999,8 @@ export const useFlowStore = create<FlowState>()(
         ? `${prompt}\n\n${referencePrompts.join('\n')}`
         : prompt
       
-      // 🎥 Motion Prompt + Reference Image: Force camera transformation
-      if (hasMotionPrompt && referenceImages.length > 0) {
+      // 🎥 Motion Prompt: Apply camera transformation (with or without reference image)
+      if (hasMotionPrompt) {
         const motionData = motionPromptNode?.data as MotionPromptNodeData
         const hasCameraMovement = 
           (motionData.cameraRotation && motionData.cameraRotation !== 0) ||
@@ -1008,94 +1008,236 @@ export const useFlowStore = create<FlowState>()(
           (motionData.cameraDistance && motionData.cameraDistance !== 1.0)
         
         if (hasCameraMovement) {
-          // Check if 90-degree rotation is specified
-          const has90DegreeRotation = Math.abs(motionData.cameraRotation || 0) === 90
-          const rotationDirection = (motionData.cameraRotation || 0) > 0 ? 'right' : 'left'
-          const visibleSide = (motionData.cameraRotation || 0) > 0 ? 'LEFT' : 'RIGHT'
+          // 360도 시스템: 각도별 특별 처리
+          const rotation = motionData.cameraRotation || 0
+          const normalizedRotation = Math.round(((rotation % 360) + 360) % 360)
           
-          let specialRotationNote = ''
-          if (has90DegreeRotation) {
-            specialRotationNote = `
-
-🚨 CRITICAL 90-DEGREE SIDE VIEW INSTRUCTION:
-The prompt specifies "rotate ${rotationDirection} 90°" - this is a PERPENDICULAR side view!
-
-MANDATORY REQUIREMENTS for 90° rotation:
-✅ Camera positioned at COMPLETE 90-degree angle (perpendicular to subject)
-✅ Subject facing PERPENDICULAR to camera (left-to-right across frame)
-✅ ONLY ${visibleSide} side profile visible (complete side view)
-✅ NO frontal face visible - pure lateral perspective
-✅ Subject appears in profile, oriented across the frame horizontally
-✅ This is NOT a frontal or three-quarter view - it's a FULL SIDE VIEW
-
-🚫 ABSOLUTELY FORBIDDEN at 90°:
-❌ Showing any frontal face
-❌ Any three-quarter or angled view
-❌ Subject facing toward camera
-❌ Any frontal perspective elements
-
-90° means PERPENDICULAR - imagine looking at subject from directly their ${rotationDirection} side.`
+          let cameraDescription = ''
+          let shotType = ''
+          let lensType = ''
+          let angleDetails = ''
+          
+          // 🎬 Rotation 해석 (Google Gemini Photography Terminology)
+          if (normalizedRotation === 0 || normalizedRotation === 360) {
+            shotType = 'straight-on frontal shot'
+            lensType = '50mm standard lens'
+            angleDetails = 'Camera positioned directly in front of subject at eye level, neutral perspective'
+          } else if (normalizedRotation > 0 && normalizedRotation <= 30) {
+            shotType = 'slight three-quarter left view'
+            lensType = '85mm portrait lens'
+            angleDetails = `Subject's LEFT side slightly visible, frontal composition dominant (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation > 30 && normalizedRotation < 60) {
+            shotType = 'three-quarter left shot'
+            lensType = '85mm portrait lens'
+            angleDetails = `Balanced composition showing subject's LEFT side and front face (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation >= 60 && normalizedRotation < 90) {
+            shotType = 'left side three-quarter view'
+            lensType = '85mm portrait lens'
+            angleDetails = `Subject's LEFT side dominant, approaching profile perspective (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation === 90) {
+            shotType = 'left side profile shot'
+            lensType = '85mm portrait lens'
+            angleDetails = `⚠️ PERPENDICULAR SIDE VIEW: Camera positioned 90° to subject's left, showing ONLY left profile, NO frontal face visible`
+          } else if (normalizedRotation > 90 && normalizedRotation < 120) {
+            shotType = 'left three-quarter back view'
+            lensType = '50mm standard lens'
+            angleDetails = `Subject's back and LEFT side visible, NO frontal face (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation >= 120 && normalizedRotation < 165) {
+            shotType = 'three-quarter back shot from left'
+            lensType = '50mm standard lens'
+            angleDetails = `Subject's back dominant with LEFT side visible (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation >= 165 && normalizedRotation <= 195) {
+            shotType = 'back view shot'
+            lensType = '50mm standard lens'
+            angleDetails = `⚠️ REAR VIEW: Camera positioned directly behind subject at 180°, subject facing AWAY from camera`
+          } else if (normalizedRotation > 195 && normalizedRotation < 240) {
+            shotType = 'three-quarter back shot from right'
+            lensType = '50mm standard lens'
+            angleDetails = `Subject's back dominant with RIGHT side visible (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation >= 240 && normalizedRotation < 270) {
+            shotType = 'right three-quarter back view'
+            lensType = '50mm standard lens'
+            angleDetails = `Subject's back and RIGHT side visible, NO frontal face (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation === 270) {
+            shotType = 'right side profile shot'
+            lensType = '85mm portrait lens'
+            angleDetails = `⚠️ PERPENDICULAR SIDE VIEW: Camera positioned 90° to subject's right, showing ONLY right profile, NO frontal face visible`
+          } else if (normalizedRotation > 270 && normalizedRotation < 300) {
+            shotType = 'right side three-quarter view'
+            lensType = '85mm portrait lens'
+            angleDetails = `Subject's RIGHT side dominant, approaching profile perspective (${normalizedRotation}° counterclockwise from front)`
+          } else if (normalizedRotation >= 300 && normalizedRotation < 330) {
+            shotType = 'three-quarter right shot'
+            lensType = '85mm portrait lens'
+            angleDetails = `Balanced composition showing subject's RIGHT side and front face (${normalizedRotation}° counterclockwise from front)`
+          } else {
+            shotType = 'slight three-quarter right view'
+            lensType = '85mm portrait lens'
+            angleDetails = `Subject's RIGHT side slightly visible, frontal composition dominant (${normalizedRotation}° counterclockwise from front)`
           }
           
-          enhancedPrompt = `🎬 CRITICAL: CAMERA TRANSFORMATION WITH CHARACTER CONSISTENCY 🎬${specialRotationNote}
+          cameraDescription += `📷 SHOT TYPE: ${shotType}\n`
+          cameraDescription += `🎥 LENS: ${lensType}\n`
+          cameraDescription += `📐 ANGLE: ${angleDetails}\n`
+          
+          // 🎬 Tilt 해석 (Photography Perspective Terms)
+          let perspectiveType = ''
+          if (motionData.cameraTilt && motionData.cameraTilt !== 0) {
+            const tiltRounded = Math.round(Math.abs(motionData.cameraTilt))
+            if (motionData.cameraTilt > 0) {
+              perspectiveType = 'high-angle perspective'
+              cameraDescription += `📷 PERSPECTIVE: ${perspectiveType} (+${tiltRounded}°)\n`
+              cameraDescription += `   Camera positioned ABOVE subject, looking DOWN at ${tiltRounded}° angle below horizontal\n`
+              cameraDescription += '   Creates diminishing, vulnerable framing (subject appears smaller)\n'
+            } else {
+              perspectiveType = 'low-angle perspective'
+              cameraDescription += `📷 PERSPECTIVE: ${perspectiveType} (-${tiltRounded}°)\n`
+              cameraDescription += `   Camera positioned BELOW subject, looking UP at ${tiltRounded}° angle above horizontal\n`
+              cameraDescription += '   Creates empowering, heroic framing (subject appears larger/dominant)\n'
+            }
+          }
+          
+          // 🎬 Distance 해석 (Cinematography Framing Terms)
+          let framingType = ''
+          if (motionData.cameraDistance && motionData.cameraDistance !== 1.0) {
+            const distRounded = Math.round(motionData.cameraDistance * 100) / 100
+            if (motionData.cameraDistance > 1.0) {
+              if (distRounded >= 2.0) {
+                framingType = 'wide shot'
+              } else if (distRounded >= 1.5) {
+                framingType = 'medium-wide shot'
+              } else {
+                framingType = 'medium shot'
+              }
+              cameraDescription += `📷 FRAMING: ${framingType} (${distRounded}x distance)\n`
+              cameraDescription += `   Camera positioned farther away, showing more environment and context\n`
+            } else {
+              if (distRounded <= 0.5) {
+                framingType = 'extreme close-up'
+              } else if (distRounded <= 0.7) {
+                framingType = 'close-up shot'
+              } else {
+                framingType = 'medium close-up'
+              }
+              cameraDescription += `📷 FRAMING: ${framingType} (${distRounded}x distance)\n`
+              cameraDescription += `   Camera positioned closer, tight framing emphasizing details and expressions\n`
+            }
+          }
+          
+          // 🎬 Rotation Subject 해석 (Cinematography Method)
+          if (normalizedRotation !== 0 && normalizedRotation !== 360) {
+            if (motionData.rotationSubject === 'camera-orbit') {
+              cameraDescription += `\n🎬 CAMERA MOVEMENT: Orbital tracking shot (camera circles around stationary subject)\n`
+              cameraDescription += '   ⚠️ CRITICAL TECHNIQUE: Camera physically moves around subject on circular dolly/track\n'
+              cameraDescription += '   ⚠️ Subject remains STATIONARY - maintains same body orientation and facing direction\n'
+              cameraDescription += '   ⚠️ Only camera position changes (like photographer walking around statue)\n'
+              cameraDescription += '   ⚠️ Background perspective shifts - environment visible from new camera angle\n'
+              cameraDescription += '   ⚠️ Creates parallax effect - foreground/background move at different rates\n'
+              cameraDescription += '   💡 CINEMA REFERENCE: The Matrix "bullet time", Inception hallway fight camera work\n'
+            } else if (motionData.rotationSubject === 'character-turn') {
+              cameraDescription += `\n🧍 SUBJECT MOVEMENT: Character turns/rotates body (camera stays fixed)\n`
+              cameraDescription += '   ⚠️ CRITICAL TECHNIQUE: Subject physically rotates their body to face new direction\n'
+              cameraDescription += '   ⚠️ Camera remains STATIONARY - fixed position (typically frontal)\n'
+              cameraDescription += '   ⚠️ Subject turns like person rotating on turntable or reacting to sound\n'
+              cameraDescription += '   ⚠️ Background stays FIXED - no perspective change, no parallax\n'
+              cameraDescription += '   ⚠️ Environment remains static from same camera viewpoint\n'
+              cameraDescription += '   💡 CINEMA REFERENCE: Character turning to face someone off-camera, "slow turn reveal" shots\n'
+            }
+          }
+          
+          // 🎬 Google Gemini 공식 템플릿 적용
+          // Reference Image가 있으면 캐릭터 일관성 + 카메라, 없으면 순수 카메라 각도
+          if (referenceImages.length > 0) {
+            // WITH REFERENCE: Character Consistency + Camera Transformation
+            enhancedPrompt = `A photorealistic image of the subject from the reference image, maintaining EXACT character consistency.
 
-⚠️ MANDATORY INSTRUCTIONS (PRIORITY ORDER):
+🎥 CAMERA SPECIFICATIONS (Google Gemini Format):
+${cameraDescription}
 
-1️⃣ HIGHEST PRIORITY - CHARACTER/STYLE CONSISTENCY (from reference image):
-   ✅ MUST PRESERVE EXACTLY:
-   - Character facial features, hair, eye color, skin tone
-   - Character clothing, outfit design, colors, materials
-   - Character body proportions, build, posture style
-   - Lighting quality, color palette, tone, mood
-   - Visual style, textures, rendering quality
-   - Background architectural elements, props, environment
+📸 CAPTURED WITH:
+Captured with ${lensType}, ${perspectiveType || 'natural eye-level perspective'}, ${framingType || 'medium framing'}.
+Professional photography lighting, emphasizing character details and textures.
+High-quality rendering with accurate depth of field and natural bokeh.
+
+⚠️ CRITICAL REQUIREMENTS (PRIORITY ORDER):
+
+1️⃣ CHARACTER CONSISTENCY (HIGHEST PRIORITY):
+   ✅ PRESERVE EXACTLY from reference image:
+   - Facial features, hair style/color, eye color, skin tone, expressions
+   - Clothing design, outfit colors, materials, textures, accessories
+   - Body proportions, build, height, posture characteristics
+   - Visual style, rendering quality, artistic treatment
+   - Color palette, tone, mood, lighting quality
    
-   🚫 ABSOLUTELY FORBIDDEN:
-   - Changing character appearance (face, hair, body)
-   - Changing outfit design, colors, or materials
-   - Changing color palette or visual tone
-   - Altering character identity or features
+   🚫 FORBIDDEN:
+   - Changing character appearance or identity
+   - Altering outfit design or colors
+   - Modifying visual style or rendering quality
 
-2️⃣ SECOND PRIORITY - CAMERA TRANSFORMATION (from prompt):
-   📷 REQUIRED CAMERA CHANGES:
-   ${prompt}
+2️⃣ CAMERA TRANSFORMATION (SECOND PRIORITY):
+   ✅ APPLY EXACT CAMERA SPECIFICATIONS above:
+   - Follow shot type and lens specifications precisely
+   - Implement exact angle and perspective described
+   - Apply specified framing and composition
+   - For side views (90°/270°): Show ONLY profile, NO frontal face
+   - For back view (180°): Subject faces AWAY, show back only
    
-   ✅ YOU MUST:
-   - Apply the specified camera angle/rotation
-   - Apply the specified camera tilt (high/low angle)
-   - Apply the specified camera distance/zoom
-   - Change viewpoint perspective from reference
-   
-   🚨 SPECIAL: If "rotate right/left 90°" is specified:
-   - This means PERPENDICULAR side view (NOT frontal!)
-   - Camera positioned at 90-degree angle to subject
-   - Subject faces PERPENDICULAR to camera (left-to-right across frame)
-   - ONLY one side profile visible, NO frontal face
-   - Complete lateral/side perspective
-   
-   🚫 DO NOT:
-   - Keep the same camera angle as reference
-   - Ignore camera transformation instructions
-   - Show frontal face when 90° is specified
+   🚫 FORBIDDEN:
+   - Keeping same camera angle as reference
+   - Approximating angles (${normalizedRotation}° is precise)
+   - Ignoring perspective/framing specifications
 
-🎯 EXECUTION STRATEGY:
-Step 1: Extract visual identity from reference (character, style, colors)
-Step 2: Apply camera transformation to that exact character/scene
-Step 3: Verify character consistency is maintained
+💡 PHOTOGRAPHY ANALOGY:
+You are photographing the SAME character from a DIFFERENT camera position.
+Think: Professional photographer shooting model from new angle.
+- Character = 100% IDENTICAL to reference
+- Camera = MOVED to new position as specified
 
-💡 ANALOGY: You're photographing the SAME character from a DIFFERENT angle.
-- The character stays IDENTICAL
-- Only the camera moves to a new position
+${prompt}
 
-✨ FINAL CHECK:
-- Does the character look EXACTLY like the reference? ✓
-- Is the camera angle DIFFERENT from reference? ✓
-- Both must be TRUE for success!
+Generate the image with PERFECT character consistency and EXACT camera transformation as specified.`
+          } else {
+            // WITHOUT REFERENCE: Pure Camera Angle Specification
+            enhancedPrompt = `A photorealistic image following precise camera specifications.
 
-Generate the image maintaining PERFECT character consistency while applying the EXACT camera transformation specified above.`
+🎥 CAMERA SPECIFICATIONS (Google Gemini Format):
+${cameraDescription}
+
+📸 CAPTURED WITH:
+Captured with ${lensType}, ${perspectiveType || 'natural eye-level perspective'}, ${framingType || 'medium framing'}.
+Professional cinematic lighting creating a compelling atmosphere.
+High-quality rendering with accurate depth of field and natural bokeh effect.
+
+⚠️ CRITICAL CAMERA REQUIREMENTS:
+
+✅ MANDATORY EXECUTION:
+- STRICTLY follow shot type and lens specifications above
+- PRECISELY implement the angle described (${normalizedRotation}° is exact)
+- ACCURATELY apply perspective and framing specified
+- For frontal (0°): Straight-on view, eye level, balanced composition
+- For three-quarter views: Show both side and front in balanced mix
+- For side views (90°/270°): PERPENDICULAR - show COMPLETE side profile, NO frontal face
+- For back view (180°): Subject facing AWAY from camera, rear view only
+- Use cinematic composition principles and rule of thirds
+
+🚫 FORBIDDEN:
+- Ignoring camera specifications
+- Using default/standard camera angles instead of specified angles
+- Approximating angles (${normalizedRotation}° must be precise)
+- Showing frontal face when side/back view specified
+- Deviating from lens or perspective specifications
+
+💡 PHOTOGRAPHY DIRECTION:
+The camera angle/position is the PRIMARY creative requirement.
+Generate the subject/scene from THIS EXACT camera perspective.
+Think: Professional cinematographer executing precise camera placement.
+
+${prompt}
+
+Generate the image from the EXACT camera position, angle, lens, and framing specified above.`
+          }
         }
       }
-      
       // 🎯 Grid Composer + LLM: 참조 정확도에 따라 지시 추가
       else if (hasGridComposerRef && hasLLMPrompt) {
         if (referenceMode === 'exact') {
@@ -2351,62 +2493,60 @@ When a reference image is provided, your #1 priority is maintaining EXACT charac
 
 Your camera descriptions must EMPHASIZE photographing the SAME character from a DIFFERENT angle.
 
-📐 CAMERA PARAMETERS YOU'LL RECEIVE (360° SYSTEM):
-- Rotation: 0-360° clockwise rotation around subject (e.g., "right side view 90°", "rotate 45° clockwise from front")
+📐 CAMERA PARAMETERS YOU'LL RECEIVE (CINEMATOGRAPHY TERMS):
+- Rotation: Cinematic angle descriptions (e.g., "right side profile", "three-quarter right view", "back view")
 - Tilt: -45° to +45° (e.g., "low angle 39.6°" or "high angle 30°") - vertical camera angle shots
 - Distance/Zoom: (e.g., "zoom in 0.7x" or "zoom out 1.3x") - camera distance from subject
 
 ✨ HOW TO INTERPRET:
 
-1. ROTATION (360° Horizontal Positioning):
-   🎥 CRITICAL: 360° system - camera rotates CLOCKWISE around subject viewed from above!
+1. ROTATION (Cinematography Angles):
+   🎥 CRITICAL: Use standard film/photography terminology for camera angles!
    
-   📍 0° (Front View) = CAMERA directly in front of subject
+   📍 Front View = CAMERA directly in front of subject
       • Subject facing toward camera
       • Frontal perspective, symmetric composition
    
-   🔄 1-89° (Front-Right Quadrant) = CAMERA rotating clockwise from front
-      • 45° = Three-quarter right view
-      • Subject's LEFT side becoming visible
-      • Still some frontal visibility
+   🔄 Slight Three-Quarter Left View = Camera slightly rotated, left side emerging
+      • Subject's LEFT side slightly visible
+      • Mostly frontal with subtle side angle
    
-   ▶️ 90° (RIGHT SIDE VIEW) = CAMERA PERPENDICULAR at subject's right
-      • COMPLETE SIDE PROFILE from right
-      • Subject facing PERPENDICULAR to camera (NOT toward camera!)
-      • ONLY subject's LEFT side visible
-      • NO frontal face - pure lateral perspective
+   🔄 Three-Quarter Left View = Classic portrait angle showing left side
+      • Subject's LEFT side and front balanced
+      • Standard three-quarter composition
    
-   🔄 91-179° (Back-Right Quadrant) = CAMERA continuing clockwise
-      • 135° = Three-quarter back-right view
-      • Subject's back and left side visible
-      • NO frontal face visible
+   ◀️ Left Side Profile = Complete left profile view
+      • COMPLETE SIDE VIEW - pure lateral perspective
+      • ONLY subject's LEFT profile visible
+      • NO frontal face - subject facing perpendicular
    
-   🔙 180° (BACK VIEW) = CAMERA directly behind subject
-      • Complete rear view
-      • Subject facing AWAY from camera
-      • Back of head, shoulders, back visible
+   🔄 Left Three-Quarter Back View = Transitioning to back from left
+      • Subject's back and LEFT side visible
+      • NO frontal face
    
-   🔄 181-269° (Back-Left Quadrant) = CAMERA continuing clockwise
-      • 225° = Three-quarter back-left view
-      • Subject's back and right side visible
-      • NO frontal face visible
+   🔙 Back View = Camera directly behind subject
+      • Complete rear perspective
+      • Subject facing away from camera
    
-   ◀️ 270° (LEFT SIDE VIEW) = CAMERA PERPENDICULAR at subject's left
-      • COMPLETE SIDE PROFILE from left
-      • Subject facing PERPENDICULAR to camera
-      • ONLY subject's RIGHT side visible
-      • NO frontal face - pure lateral perspective
+   🔄 Right Three-Quarter Back View = Transitioning to back from right
+      • Subject's back and RIGHT side visible
+      • NO frontal face
    
-   🔄 271-359° (Front-Left Quadrant) = CAMERA completing rotation
-      • 315° = Three-quarter left view
-      • Subject's RIGHT side becoming visible
-      • Frontal visibility returning
+   ▶️ Right Side Profile = Complete right profile view
+      • COMPLETE SIDE VIEW - pure lateral perspective
+      • ONLY subject's RIGHT profile visible
+      • NO frontal face
+   
+   🔄 Three-Quarter Right View = Classic portrait angle showing right side
+      • Subject's RIGHT side and front balanced
+      • Standard three-quarter composition
    
    ⚠️ KEY PRINCIPLES:
-   - Numbers represent CAMERA POSITION rotating clockwise (viewed from above)
-   - 90° = right side camera → see subject's LEFT profile
-   - 270° = left side camera → see subject's RIGHT profile
-   - Always describe camera as "POSITIONED at X degrees" for clarity
+   - Use cinematic/photographic terminology, not numerical degrees
+   - "Left profile" = left side of face/body visible
+   - "Right profile" = right side of face/body visible
+   - "Three-quarter" = angled view showing both side and front
+   - "Back view" = rear view (subject facing away)
 
 2. TILT (Vertical Angle) - 🚨 CRITICAL FOR IMAGE GENERATION:
    
@@ -2488,21 +2628,21 @@ Your camera descriptions must EMPHASIZE photographing the SAME character from a 
 
 📝 EXAMPLE TRANSFORMATIONS:
 
-Example 1 (45° - Three-Quarter View):
-Input: "rotate 45° clockwise from front, low angle 30°, zoom in 0.7x"
-Output: "CAMERA POSITIONED at 45 degrees - a three-quarter front-right position rotating clockwise from the front. At this angle, the camera captures the subject's LEFT side and face in a balanced three-quarter composition, showing the left profile while maintaining frontal visibility. MAINTAIN EXACT character appearance from reference - same facial features, hair, clothing, and visual style; only the camera angle changes. CRITICALLY, the CAMERA is placed significantly BELOW the subject's eye level - positioned low to the ground and angled sharply UPWARD. This dramatic low angle shot creates a POWERFUL, HEROIC composition where the viewer must look UP at the subject, emphasizing their stature and commanding presence. The upward angle makes the subject appear taller and more imposing, with the chin line and jawline prominent, while the background ceiling becomes more visible above. The close-in 0.7x framing tightens the composition, filling the frame with the subject's upper body and face. REMEMBER: Same character from reference, just photographed from a different angle."
+Example 1 (Three-Quarter Left View):
+Input: "three-quarter left view, low angle 30°, zoom in 0.7x"
+Output: "CAMERA POSITIONED in classic three-quarter left portrait angle. At this angle, the camera captures the subject's LEFT side and face in a balanced three-quarter composition, showing the left profile while maintaining frontal visibility. MAINTAIN EXACT character appearance from reference - same facial features, hair, clothing, and visual style; only the camera angle changes. CRITICALLY, the CAMERA is placed significantly BELOW the subject's eye level - positioned low to the ground and angled sharply UPWARD. This dramatic low angle shot creates a POWERFUL, HEROIC composition where the viewer must look UP at the subject, emphasizing their stature and commanding presence. The upward angle makes the subject appear taller and more imposing, with the chin line and jawline prominent, while the background ceiling becomes more visible above. The close-in 0.7x framing tightens the composition, filling the frame with the subject's upper body and face. REMEMBER: Same character from reference, just photographed from a different angle."
 
-Example 2 (90° - Right Side View):
-Input: "right side view 90°, zoom out 1.3x"
-Output: "CAMERA POSITIONED at 90 degrees - directly at the subject's RIGHT side in a PERPENDICULAR position. This creates a COMPLETE SIDE PROFILE view where the subject is facing PERPENDICULAR to the camera (NOT toward the camera). From this pure lateral camera position, ONLY the subject's LEFT side is visible - left profile, left arm, left leg. NO frontal face visible - this is a true side view with the body oriented left-to-right across the frame. MAINTAIN EXACT character appearance - same height, build, hair, clothing from reference. The 1.3x wider framing shows more environment extending in front of and behind the subject. This perpendicular 90-degree angle creates a strong sense of lateral movement and spatial depth. CHARACTER CONSISTENCY: Same person from reference, captured in complete side profile."
+Example 2 (Left Side Profile):
+Input: "left side profile, zoom out 1.3x"
+Output: "CAMERA POSITIONED in complete left side profile - perpendicular to the subject. This creates a COMPLETE SIDE PROFILE view where the subject is facing PERPENDICULAR to the camera (NOT toward the camera). From this pure lateral camera position, ONLY the subject's LEFT side is visible - left profile, left arm, left leg. NO frontal face visible - this is a true side view with the body oriented left-to-right across the frame. MAINTAIN EXACT character appearance - same height, build, hair, clothing from reference. The 1.3x wider framing shows more environment extending in front of and behind the subject. This perpendicular profile angle creates a strong sense of lateral movement and spatial depth. CHARACTER CONSISTENCY: Same person from reference, captured in complete left side profile."
 
-Example 3 (180° - Back View):
-Input: "back view 180°, zoom out 1.5x"
-Output: "CAMERA POSITIONED at 180 degrees - directly BEHIND the subject in a complete rear view. At this angle, the camera captures the back of the subject's head, shoulders, and full back. The subject is facing AWAY from the camera. NO frontal face visible - only the rear perspective. PRESERVE EXACT character appearance - identical hair, clothing design, colors, and body proportions from reference image. The 1.5x wider framing pulls back to reveal more environmental context, showing the subject within their surroundings and the space ahead of them. This back view creates a sense of forward movement and anticipation, as we see what the subject is approaching. CHARACTER CONSISTENCY: Same person from reference, viewed from behind."
+Example 3 (Back View):
+Input: "back view, zoom out 1.5x"
+Output: "CAMERA POSITIONED directly BEHIND the subject in a complete rear view. At this angle, the camera captures the back of the subject's head, shoulders, and full back. The subject is facing AWAY from the camera. NO frontal face visible - only the rear perspective. PRESERVE EXACT character appearance - identical hair, clothing design, colors, and body proportions from reference image. The 1.5x wider framing pulls back to reveal more environmental context, showing the subject within their surroundings and the space ahead of them. This back view creates a sense of forward movement and anticipation, as we see what the subject is approaching. CHARACTER CONSISTENCY: Same person from reference, viewed from behind."
 
-Example 4 (270° - Left Side View):
-Input: "left side view 270°, low angle 25°, zoom in 0.8x"
-Output: "CAMERA POSITIONED at 270 degrees - directly at the subject's LEFT side in a PERPENDICULAR position. This creates a COMPLETE SIDE PROFILE view where the subject is facing PERPENDICULAR to the camera. From this pure lateral camera position, ONLY the subject's RIGHT side is visible - right profile, right arm, right leg. NO frontal face visible - pure lateral perspective. KEEP character appearance EXACTLY as reference. CRITICALLY, the CAMERA is placed BELOW the subject's eye level, positioned low and angled UPWARD. This low angle creates an EMPOWERING perspective, where the viewer looks up at the subject, adding authority and confidence. The 0.8x closer framing emphasizes the subject's profile and upper body. CHARACTER CONSISTENCY: Same person from reference, captured in complete right-side profile at 270 degrees."
+Example 4 (Right Side Profile):
+Input: "right side profile, low angle 25°, zoom in 0.8x"
+Output: "CAMERA POSITIONED in complete right side profile - perpendicular to the subject. This creates a COMPLETE SIDE PROFILE view where the subject is facing PERPENDICULAR to the camera. From this pure lateral camera position, ONLY the subject's RIGHT side is visible - right profile, right arm, right leg. NO frontal face visible - pure lateral perspective. KEEP character appearance EXACTLY as reference. CRITICALLY, the CAMERA is placed BELOW the subject's eye level, positioned low and angled UPWARD. This low angle creates an EMPOWERING perspective, where the viewer looks up at the subject, adding authority and confidence. The 0.8x closer framing emphasizes the subject's profile and upper body. CHARACTER CONSISTENCY: Same person from reference, captured in complete right side profile."
 
 🎨 Focus on SPATIAL HEIGHT (above/below), LOOKING DIRECTION (up/down), and PSYCHOLOGICAL IMPACT. Make the camera's vertical position crystal clear!
 

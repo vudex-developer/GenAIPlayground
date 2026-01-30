@@ -48,6 +48,8 @@ export type NanoImageNodeData = {
   maxReferences: number  // Number of reference input handles (1-5)
 }
 
+export type RotationSubject = 'camera-orbit' | 'character-turn'
+
 export type MotionPromptNodeData = {
   basePrompt: string
   cameraMovement: string
@@ -58,6 +60,8 @@ export type MotionPromptNodeData = {
   cameraRotation: number  // 0 ~ 360 degrees (360도 회전: 0°=정면, 90°=오른쪽, 180°=뒤, 270°=왼쪽)
   cameraTilt: number      // -45 ~ 45 degrees (상하 틸트)
   cameraDistance: number  // 0.5 ~ 2.0 (거리/줌)
+  // Rotation Subject (회전 기준)
+  rotationSubject: RotationSubject  // 'camera-orbit' = 카메라가 회전 (배경도 회전), 'character-turn' = 인물만 회전 (배경 고정)
   // Keyframe Animation (시작/끝 프레임)
   enableKeyframes: boolean  // 키프레임 애니메이션 활성화
   // Start Frame
@@ -242,6 +246,7 @@ export const createNodeData = (type: NodeType): NodeData => {
         cameraRotation: 0,    // 기본값: 0도 (정면)
         cameraTilt: 0,        // 기본값: 0도 (Eye Level)
         cameraDistance: 1.0,  // 기본값: 1.0x (보통 거리)
+        rotationSubject: 'character-turn',  // 기본값: 인물 회전 (AI가 더 잘 이해함)
         // Keyframe Animation
         enableKeyframes: false,  // 기본값: 비활성화
         startRotation: 0,
