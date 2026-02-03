@@ -25,6 +25,35 @@ const parseDataUrl = (dataUrl: string): InlineImagePayload | null => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+const extractVideoUri = (result: Record<string, any>): string | undefined => {
+  const candidates = [
+    result?.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri,
+    result?.response?.generateVideoResponse?.generatedSamples?.[0]?.videoUri,
+    result?.response?.generateVideoResponse?.generatedVideos?.[0]?.video?.uri,
+    result?.response?.generateVideoResponse?.generatedVideos?.[0]?.uri,
+    result?.response?.generatedSamples?.[0]?.video?.uri,
+    result?.response?.generatedSamples?.[0]?.videoUri,
+    result?.response?.generatedVideos?.[0]?.video?.uri,
+    result?.response?.generatedVideos?.[0]?.uri,
+    result?.response?.videoUris?.[0],
+    result?.response?.videoUri,
+    result?.response?.outputs?.[0]?.video?.uri,
+  ]
+  const direct = candidates.find((value) => typeof value === 'string' && value.length > 0)
+  if (direct) return direct
+
+  const parts = result?.response?.candidates?.[0]?.content?.parts
+  if (Array.isArray(parts)) {
+    const filePart = parts.find(
+      (part) => part?.fileData?.fileUri || part?.fileData?.uri || part?.inlineData?.fileUri,
+    )
+    const fileUri = filePart?.fileData?.fileUri || filePart?.fileData?.uri || filePart?.inlineData?.fileUri
+    if (typeof fileUri === 'string' && fileUri.length > 0) return fileUri
+  }
+
+  return undefined
+}
+
 const mapDuration = (duration?: 5 | 10) => {
   if (!duration) return undefined
   return duration === 5 ? 6 : 8
@@ -162,6 +191,17 @@ export class GeminiAPIClient {
     }
 
     const result = await response.json()
+    
+    // 🔍 DEBUG: API 응답 전체 구조 확인
+    console.log('🔍 [Gemini API] Full response structure:', JSON.stringify(result, null, 2))
+    console.log('🔍 [Gemini API] Response keys:', Object.keys(result))
+    if (result.candidates) {
+      console.log('🔍 [Gemini API] Number of candidates:', result.candidates.length)
+    }
+    if (result.generatedImages) {
+      console.log('🔍 [Gemini API] Number of generatedImages:', result.generatedImages.length)
+    }
+    
     const extractImagePayload = (
       response: Record<string, unknown>,
     ): { mimeType: string; data: string } | null => {
@@ -267,14 +307,35 @@ export class GeminiAPIClient {
       
       const result = await response.json()
       
+      if (result.error?.message) {
+        throw new Error(`Veo 작업 실패: ${result.error.message}`)
+      }
+
+      if (result.response?.error?.message) {
+        throw new Error(`Veo 작업 실패: ${result.response.error.message}`)
+      }
+
       if (result.done) {
-        const uri =
-          result?.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri
+        console.log('🔍 Gemini LRO done. Full result:', JSON.stringify(result, null, 2))
+        const uri = extractVideoUri(result)
         if (!uri) {
-          console.error('❌ 비디오 URI 없음:', result)
-          throw new Error('비디오 URI를 찾지 못했습니다.')
+          console.error('❌ 비디오 URI 없음. 응답 구조:')
+          console.error('result.response:', result.response)
+          console.error('Full result:', result)
+          
+          // Check for safety/filter blocks
+          const blockReason = 
+            result?.response?.promptFeedback?.blockReason ||
+            result?.response?.candidates?.[0]?.finishReason ||
+            'UNKNOWN'
+          
+          if (blockReason && blockReason !== 'STOP' && blockReason !== 'UNKNOWN') {
+            throw new Error(`비디오 생성이 차단되었습니다 (${blockReason}). 프롬프트나 이미지를 변경해주세요.`)
+          }
+          
+          throw new Error('비디오 URI를 찾지 못했습니다. Gemini API 응답 포맷이 변경되었을 수 있습니다. 콘솔을 확인해주세요.')
         }
-        console.log('✅ 비디오 생성 완료!')
+        console.log('✅ 비디오 생성 완료! URI:', uri)
         return uri
       }
       
@@ -340,7 +401,7 @@ export class MockGeminiAPI {
   async generateImage(
     prompt: string,
     _aspectRatio?: '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9' | '3:2' | '2:3' | '5:4' | '4:5',
-    _sourceImageDataUrl?: string,
+    sourceImageDataUrl?: string,
     _model?: string,
     _imageSize?: '1K' | '2K' | '4K',
   ): Promise<{ imageUrl: string; imageDataUrl: string }> {
@@ -348,8 +409,15 @@ export class MockGeminiAPI {
       throw new Error('Prompt is empty')
     }
     await this.delay(1500)
+    
+    // If source image is provided, return it as-is (for testing)
+    if (sourceImageDataUrl && sourceImageDataUrl.startsWith('data:')) {
+      return { imageUrl: sourceImageDataUrl, imageDataUrl: sourceImageDataUrl }
+    }
+    
+    // Otherwise return a placeholder
     const url = `https://picsum.photos/1024/1024?random=${Date.now()}`
-    return { imageUrl: url, imageDataUrl: '' }
+    return { imageUrl: url, imageDataUrl: url }
   }
 
   async checkAvailability(): Promise<boolean> {

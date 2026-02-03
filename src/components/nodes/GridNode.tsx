@@ -109,7 +109,7 @@ export default function GridNode({
                     : 'bg-slate-800 border-slate-700 text-slate-400'
                 }`}
               >
-                {slot.label || slot.id}
+                {slot.id}
               </span>
             ))}
             {data.slots.length > 4 && (
@@ -170,6 +170,20 @@ export default function GridNode({
           )
         })}
       </div>
+
+      {/* Special Output Handle - Bottom (for Cell Regenerator grid-layout) */}
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="grid-layout"
+        style={{ 
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#3b82f6'
+        }}
+        className="!h-3 !w-3 !border-2 !border-[#1c2431]"
+        title="Grid Layout Info (for Cell Regenerator)"
+      />
     </div>
   )
 }

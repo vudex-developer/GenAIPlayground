@@ -138,6 +138,40 @@ export type GridSlot = {
   id: string
   label: string  // Front, Side, Wide, Medium, etc.
   metadata: string  // Additional info
+  // 🎥 Camera parameters (for precise angle control like Motion Prompt)
+  cameraRotation?: number  // 0-360 degrees
+  cameraTilt?: number      // -90 to +90 degrees
+  cameraDistance?: number  // 0.1 to 3.0 (zoom multiplier)
+}
+
+// 📐 Grid Preset Templates
+export type GridPresetType =
+  // Character Mode Presets
+  | 'character-sheet-6'  // 2x3: Character reference sheet
+  | 'turnaround-4'       // 2x2: Basic turnaround
+  | 'expression-9'       // 3x3: Facial expressions
+  | 'pose-6'             // 2x3: Action poses
+  | 'photography-master-9' // 3x3: Professional photography angles (Gemini optimized)
+  // Storyboard Mode Presets
+  | 'cinematic-3'        // 1x3: Wide, Medium, Close-up
+  | 'film-sequence-6'    // 2x3: Story progression
+  | 'shot-variety-9'     // 3x3: Camera angle variety
+  | 'emotion-journey-4'  // 2x2: Emotional progression
+  | 'action-sequence-6'  // 2x3: Dynamic action scene
+  | 'dialogue-scene-4'   // 2x2: Conversation shot/reverse
+  | 'hero-journey-9'     // 3x3: Complete hero's journey arc
+  | 'satire-slice-of-life-6' // 2x3: Satire / Slice of life (Pink Bubble style)
+  | 'emotional-beat-6'   // 2x3: Character emotional journey
+  | 'comedy-timing-6'    // 2x3: Comedy setup → punchline
+  | 'custom'             // User-defined
+
+export type GridPreset = {
+  type: GridPresetType
+  name: string
+  description: string
+  mode: GridMode
+  gridLayout: GridLayout
+  slots: GridSlot[]
 }
 
 export type GridNodeData = {
@@ -145,6 +179,7 @@ export type GridNodeData = {
   mode: GridMode  // Character or Storyboard
   gridLayout: GridLayout
   slots: GridSlot[]
+  currentPreset?: GridPresetType  // Track active preset
   // Generated prompts (assembled from connected prompt nodes)
   generatedPrompts: { [slotId: string]: string }
   error?: string
@@ -281,13 +316,14 @@ export const createNodeData = (type: NodeType): NodeData => {
         status: 'idle',
         mode: 'character',
         gridLayout: '2x3',
+        currentPreset: 'character-sheet-6',  // Default preset
         slots: [
-          { id: 'S1', label: 'Front', metadata: '' },
-          { id: 'S2', label: 'Side', metadata: '' },
-          { id: 'S3', label: 'Back', metadata: '' },
-          { id: 'S4', label: '3/4', metadata: '' },
-          { id: 'S5', label: 'Face', metadata: '' },
-          { id: 'S6', label: 'Hand', metadata: '' },
+          { id: 'S1', label: 'Front View', metadata: 'Front facing, neutral pose', cameraRotation: 0, cameraTilt: 0, cameraDistance: 1.0 },
+          { id: 'S2', label: 'Left Side', metadata: 'Left side profile, 90°', cameraRotation: 90, cameraTilt: 0, cameraDistance: 1.0 },
+          { id: 'S3', label: 'Back View', metadata: 'Back view, 180°', cameraRotation: 180, cameraTilt: 0, cameraDistance: 1.0 },
+          { id: 'S4', label: 'Right 3/4', metadata: 'Three-quarter view from right', cameraRotation: 315, cameraTilt: 0, cameraDistance: 1.0 },
+          { id: 'S5', label: 'Face Close-up', metadata: 'Detailed facial features', cameraRotation: 0, cameraTilt: 0, cameraDistance: 0.6 },
+          { id: 'S6', label: 'Hand Detail', metadata: 'Hand gesture reference', cameraRotation: 315, cameraTilt: -20, cameraDistance: 0.5 },
         ],
         generatedPrompts: {},
       }

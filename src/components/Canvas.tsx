@@ -5,7 +5,9 @@ import ReactFlow, {
   Controls,
   MiniMap,
   useReactFlow,
+  BezierEdge,
   type Node,
+  type EdgeTypes,
 } from 'reactflow'
 import {
   Banana,
@@ -52,6 +54,11 @@ const nodeTypes = {
   llmPrompt: LLMPromptNode,
 }
 
+// ✅ Move outside component to prevent recreation on every render
+const edgeTypes: EdgeTypes = {
+  bezier: BezierEdge,
+}
+
 const toolbarItems: Array<{
   type: NodeType
   label: string
@@ -81,6 +88,7 @@ export default function Canvas() {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
   const [copiedNodes, setCopiedNodes] = useState<Node[]>([])
   const [currentZoom, setCurrentZoom] = useState(0.35)
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
 
   // MiniMap node colors matching node icons
   const getNodeColor = useCallback((node: Node) => {
@@ -187,12 +195,70 @@ export default function Canvas() {
 
   const onDragOver = useCallback((event: DragEvent) => {
     event.preventDefault()
-    event.dataTransfer.dropEffect = 'move'
+    
+    // 🎨 Check if dragging files (images from other apps)
+    const hasFiles = event.dataTransfer.types.includes('Files')
+    if (hasFiles) {
+      event.dataTransfer.dropEffect = 'copy'
+      setIsDraggingFile(true)
+    } else {
+      event.dataTransfer.dropEffect = 'move'
+      setIsDraggingFile(false)
+    }
   }, [])
 
   const onDrop = useCallback(
-    (event: DragEvent) => {
+    async (event: DragEvent) => {
       event.preventDefault()
+      setIsDraggingFile(false) // Reset drag state
+      
+      // 🎨 Check for image files first (drag from other apps)
+      const files = Array.from(event.dataTransfer.files)
+      const imageFile = files.find(file => file.type.startsWith('image/'))
+      
+      if (imageFile) {
+        // 📸 Image file dropped - create Image Import node
+        const position = screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        })
+        
+        const newNode = createWorkflowNode('imageImport', position)
+        addNode(newNode)
+        
+        // 🔄 Auto-upload the image to the newly created node
+        const reader = new FileReader()
+        reader.onload = async () => {
+          const dataUrl = reader.result as string
+          const img = new Image()
+          img.onload = async () => {
+            try {
+              const { saveImage } = await import('../utils/indexedDB')
+              const imageId = `img-import-${Date.now()}-${Math.random().toString(36).substring(7)}`
+              const savedRef = await saveImage(imageId, dataUrl, newNode.id, true)
+              
+              const { updateNodeData } = useFlowStore.getState()
+              updateNodeData(newNode.id, {
+                imageUrl: URL.createObjectURL(imageFile),
+                imageDataUrl: savedRef,
+                fileName: imageFile.name,
+                filePath: imageFile.name,
+                width: img.width,
+                height: img.height,
+              })
+              
+              console.log('✅ Image dropped and uploaded successfully!')
+            } catch (error) {
+              console.error('❌ Failed to upload dropped image:', error)
+            }
+          }
+          img.src = dataUrl
+        }
+        reader.readAsDataURL(imageFile)
+        return
+      }
+      
+      // 🎯 Original logic: ReactFlow node drop from palette
       const type = event.dataTransfer.getData('application/reactflow') as NodeType
       if (!type) return
 
@@ -206,10 +272,32 @@ export default function Canvas() {
     [addNode, screenToFlowPosition],
   )
 
+  const onDragLeave = useCallback((event: DragEvent) => {
+    // Only reset if leaving the canvas entirely
+    if (event.currentTarget === event.target) {
+      setIsDraggingFile(false)
+    }
+  }, [])
+
   return (
     <div className="flex h-full w-full">
       {/* Main Canvas Area */}
-      <div className="relative flex-1">
+      <div 
+        className="relative flex-1"
+        onDragLeave={onDragLeave}
+      >
+        {/* 🎨 Image Drop Overlay */}
+        {isDraggingFile && (
+          <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-blue-500/10 backdrop-blur-sm">
+            <div className="rounded-2xl border-2 border-dashed border-blue-400 bg-[#0f141a]/95 px-8 py-6 shadow-2xl">
+              <div className="flex flex-col items-center gap-3">
+                <ImageIcon className="h-12 w-12 text-blue-400" />
+                <div className="text-lg font-bold text-blue-400">이미지를 여기에 드롭하세요</div>
+                <div className="text-sm text-slate-400">Image Import 노드가 자동으로 생성됩니다</div>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Zoom Level Indicator */}
         <div className="pointer-events-none absolute right-4 top-4 z-20 rounded-xl border border-blue-400/30 bg-[#0f141a]/95 px-3 py-2 text-xs font-mono text-blue-400 shadow-lg" style={{ opacity: 0.95 }}>
           🔍 Zoom: {(currentZoom * 100).toFixed(1)}% ({currentZoom.toFixed(3)})
@@ -252,6 +340,7 @@ export default function Canvas() {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           defaultEdgeOptions={{
             type: 'bezier',
           }}

@@ -30,8 +30,9 @@ export function getStorageInfo(): StorageInfo {
     }
   }
   
-  // 브라우저 제한 (일반적으로 5-10MB, 여기서는 5MB로 가정)
-  const limit = 5 * 1024 * 1024 // 5MB in bytes
+  // 브라우저 제한 (Chrome/Firefox: 10MB, Safari: 5MB)
+  // 보수적으로 10MB로 설정 (대부분의 최신 브라우저)
+  const limit = 10 * 1024 * 1024 // 10MB in bytes
   const percentage = (totalSize / limit) * 100
   
   return {
@@ -60,45 +61,47 @@ export function cleanupOldImages(nodes: any[]): any[] {
   
   console.log(`📊 Found ${imageNodes.length} nodes with images`)
   
-  // 최신 5개만 유지하고 나머지는 URL만 유지 (DataUrl 제거)
-  const MAX_IMAGES_TO_KEEP = 5
-  
-  if (imageNodes.length <= MAX_IMAGES_TO_KEEP) {
-    console.log('✅ Image count within limit')
-    return nodes
-  }
-  
-  // 타임스탬프로 정렬 (최신순)
-  const sortedImageNodes = imageNodes.sort((a, b) => {
-    const timeA = (a.data as any).generationTime || 0
-    const timeB = (b.data as any).generationTime || 0
-    return timeB - timeA
-  })
-  
-  const nodesToClean = sortedImageNodes.slice(MAX_IMAGES_TO_KEEP)
-  const nodeIdsToClean = new Set(nodesToClean.map(n => n.id))
-  
-  console.log(`🗑️ Cleaning ${nodesToClean.length} old images`)
-  
-  // 오래된 이미지의 DataUrl 제거
+  // 🔥 localStorage를 더 공격적으로 정리: 긴 DataURL은 모두 제거
   const cleanedNodes = nodes.map(node => {
-    if (nodeIdsToClean.has(node.id)) {
-      const cleanedData = { ...node.data }
-      
-      // DataUrl만 제거, URL은 유지
-      if (cleanedData.outputImageDataUrl) {
+    const cleanedData = { ...node.data }
+    
+    // 🔥 긴 DataURL (1MB 이상) 제거 - IndexedDB 참조만 유지
+    const isLongDataURL = (str: string) => 
+      str?.startsWith('data:') && str.length > 1000000 // 1MB 이상
+    
+    // outputImageDataUrl 정리
+    if (cleanedData.outputImageDataUrl && isLongDataURL(cleanedData.outputImageDataUrl)) {
+      if (!cleanedData.outputImageDataUrl.startsWith('idb:') && !cleanedData.outputImageDataUrl.startsWith('s3:')) {
+        console.warn(`⚠️ Removing long DataURL from node ${node.id} (${(cleanedData.outputImageDataUrl.length / 1024 / 1024).toFixed(2)}MB)`)
         delete cleanedData.outputImageDataUrl
       }
-      if (cleanedData.imageDataUrl && cleanedData.imageUrl) {
+    }
+    
+    // imageDataUrl 정리
+    if (cleanedData.imageDataUrl && isLongDataURL(cleanedData.imageDataUrl)) {
+      if (!cleanedData.imageDataUrl.startsWith('idb:') && !cleanedData.imageDataUrl.startsWith('s3:')) {
+        console.warn(`⚠️ Removing long DataURL from node ${node.id}`)
         delete cleanedData.imageDataUrl
       }
-      if (cleanedData.composedImageDataUrl && cleanedData.composedImageUrl) {
+    }
+    
+    // composedImageDataUrl 정리
+    if (cleanedData.composedImageDataUrl && isLongDataURL(cleanedData.composedImageDataUrl)) {
+      if (!cleanedData.composedImageDataUrl.startsWith('idb:') && !cleanedData.composedImageDataUrl.startsWith('s3:')) {
+        console.warn(`⚠️ Removing long DataURL from node ${node.id}`)
         delete cleanedData.composedImageDataUrl
       }
-      
-      return { ...node, data: cleanedData }
     }
-    return node
+    
+    // referenceImageDataUrl 정리
+    if (cleanedData.referenceImageDataUrl && isLongDataURL(cleanedData.referenceImageDataUrl)) {
+      if (!cleanedData.referenceImageDataUrl.startsWith('idb:') && !cleanedData.referenceImageDataUrl.startsWith('s3:')) {
+        console.warn(`⚠️ Removing long reference DataURL from node ${node.id}`)
+        delete cleanedData.referenceImageDataUrl
+      }
+    }
+    
+    return { ...node, data: cleanedData }
   })
   
   console.log('✅ Image cleanup completed')
@@ -155,6 +158,48 @@ export function prepareForStorage(nodes: any[], aggressive: boolean = false): an
   }
   
   return nodes
+}
+
+/**
+ * 오래된 백업 자동 정리 (최신 3개만 유지)
+ */
+export function cleanupOldBackups(): number {
+  console.log('🧹 Cleaning up old backups...')
+  const backupKeys: Array<{ key: string; timestamp: number }> = []
+  
+  // 모든 백업 키 수집
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)
+    if (key?.startsWith('nano-banana-backup-')) {
+      const timestampStr = key.replace('nano-banana-backup-', '')
+      const timestamp = parseInt(timestampStr)
+      if (!isNaN(timestamp)) {
+        backupKeys.push({ key, timestamp })
+      }
+    }
+  }
+  
+  // 최신순 정렬
+  backupKeys.sort((a, b) => b.timestamp - a.timestamp)
+  
+  // 최신 3개 제외하고 모두 삭제
+  const MAX_BACKUPS = 3
+  let deletedCount = 0
+  
+  for (let i = MAX_BACKUPS; i < backupKeys.length; i++) {
+    try {
+      localStorage.removeItem(backupKeys[i].key)
+      deletedCount++
+    } catch (error) {
+      console.error('Failed to remove backup:', backupKeys[i].key, error)
+    }
+  }
+  
+  if (deletedCount > 0) {
+    console.log(`✅ Deleted ${deletedCount} old backups`)
+  }
+  
+  return deletedCount
 }
 
 /**

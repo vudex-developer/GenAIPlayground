@@ -1,9 +1,10 @@
-import { memo } from 'react'
+import { memo, useState, useEffect } from 'react'
 import { Handle, Position } from 'reactflow'
 import type { NodeProps } from 'reactflow'
 import { Sparkles, Grid3x3, CheckCircle2, AlertCircle, Image as ImageIcon } from 'lucide-react'
 import type { CellRegeneratorNodeData } from '../../types/nodes'
 import { useFlowStore } from '../../stores/flowStore'
+import { getImage } from '../../utils/indexedDB'
 
 const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeData>) => {
   const openImageModal = useFlowStore((state) => state.openImageModal)
@@ -11,6 +12,78 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
   const hasInputImage = !!data.inputImageUrl || !!data.inputImageDataUrl
   const hasRegeneratedImages = Object.keys(data.regeneratedImages).length > 0
   const regeneratedCount = Object.keys(data.regeneratedImages).length
+
+  // 💾 Convert storage references to data URLs
+  const [resolvedImages, setResolvedImages] = useState<{ [key: string]: string }>({})
+  const [resolvedInputImage, setResolvedInputImage] = useState<string>('')
+
+  // Load input grid image
+  useEffect(() => {
+    const loadInputImage = async () => {
+      const imageRef = data.inputImageUrl || data.inputImageDataUrl
+      if (!imageRef) return
+      
+      if (imageRef.startsWith('idb:') || imageRef.startsWith('s3:')) {
+        const dataUrl = await getImage(imageRef)
+        if (dataUrl) {
+          setResolvedInputImage(dataUrl)
+        }
+      } else {
+        setResolvedInputImage(imageRef)
+      }
+    }
+    
+    if (hasInputImage) {
+      loadInputImage()
+    }
+  }, [data.inputImageUrl, data.inputImageDataUrl, hasInputImage])
+
+  // Load regenerated cell images
+  useEffect(() => {
+    const loadImages = async () => {
+      try {
+        console.log('🔍 CellRegeneratorNode: Loading images...', {
+          count: Object.keys(data.regeneratedImages).length,
+          refs: Object.entries(data.regeneratedImages).map(([id, ref]) => `${id}: ${ref.substring(0, 50)}...`)
+        })
+        
+        const resolved: { [key: string]: string } = {}
+        const entries = Object.entries(data.regeneratedImages)
+        console.log(`📦 Total entries to process: ${entries.length}`)
+        
+        for (const [slotId, storageRef] of entries) {
+          console.log(`🔄 Processing ${slotId}...`)
+          if (storageRef.startsWith('idb:') || storageRef.startsWith('s3:')) {
+            console.log(`📥 Loading ${slotId} from storage: ${storageRef}`)
+            const dataUrl = await getImage(storageRef)
+            if (dataUrl) {
+              resolved[slotId] = dataUrl
+              console.log(`✅ ${slotId} loaded: ${dataUrl.substring(0, 50)}...`)
+            } else {
+              console.error(`❌ Failed to load ${slotId} from ${storageRef}`)
+            }
+          } else {
+            // Already a data URL
+            resolved[slotId] = storageRef
+            console.log(`✅ ${slotId} already a data URL`)
+          }
+        }
+        
+        console.log(`🎨 BEFORE setResolvedImages: ${Object.keys(resolved).length} images`)
+        setResolvedImages(resolved)
+        console.log(`🎉 AFTER setResolvedImages: Successfully updated!`)
+      } catch (error) {
+        console.error('💥 CellRegeneratorNode loadImages ERROR:', error)
+      }
+    }
+    
+    if (hasRegeneratedImages) {
+      console.log('🚀 Starting loadImages...')
+      loadImages()
+    } else {
+      console.log('⏸️ No regenerated images to load')
+    }
+  }, [data.regeneratedImages, hasRegeneratedImages])
 
   // Parse grid layout
   const [rows, cols] = data.gridLayout
@@ -54,16 +127,22 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
           <div className="space-y-1">
             <div className="text-[9px] text-slate-400">Input Grid Image:</div>
             <div className="relative aspect-video overflow-hidden rounded border border-white/10 bg-slate-800 cursor-pointer hover:border-white/20 transition">
-              <img
-                src={data.inputImageUrl || data.inputImageDataUrl}
-                alt="Grid"
-                className="h-full w-full object-contain"
-                onDoubleClick={(e) => {
-                  e.stopPropagation()
-                  openImageModal(data.inputImageUrl || data.inputImageDataUrl || '')
-                }}
-                title="더블클릭하여 크게 보기"
-              />
+              {resolvedInputImage ? (
+                <img
+                  src={resolvedInputImage}
+                  alt="Grid"
+                  className="h-full w-full object-contain"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation()
+                    openImageModal(resolvedInputImage)
+                  }}
+                  title="더블클릭하여 크게 보기"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-xs text-slate-500">
+                  Loading...
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -82,7 +161,7 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
               }}
             >
               {data.slots?.map((slot) => {
-                const imageUrl = data.regeneratedImages[slot.id]
+                const imageUrl = resolvedImages[slot.id] // ← Use resolved data URL
                 return (
                   <div
                     key={slot.id}
@@ -101,7 +180,7 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
                           title="더블클릭하여 크게 보기"
                         />
                         <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-[8px] text-white text-center">
-                          {slot.label || slot.id}
+                          {slot.id}
                         </div>
                       </>
                     ) : (
@@ -165,24 +244,34 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
       />
 
       {/* Output Handles (one per slot) */}
-      {data.slots?.map((slot, index) => {
-        const totalSlots = data.slots?.length || 1
-        const handlePosition = (index + 1) / (totalSlots + 1)
-        
-        return (
-          <Handle
-            key={slot.id}
-            type="source"
-            position={Position.Right}
-            id={slot.id}
-            style={{ 
-              top: `${handlePosition * 100}%`,
-              background: data.regeneratedImages[slot.id] ? '#10b981' : '#64748b'
-            }}
-            title={`${slot.id}: ${slot.label}`}
-          />
-        )
-      })}
+      {data.slots && data.slots.length > 0 ? (
+        data.slots.map((slot, index) => {
+          const totalSlots = data.slots?.length || 1
+          const handlePosition = (index + 1) / (totalSlots + 1)
+          
+          return (
+            <Handle
+              key={slot.id}
+              type="source"
+              position={Position.Right}
+              id={slot.id}
+              style={{ 
+                top: `${handlePosition * 100}%`,
+                background: data.regeneratedImages[slot.id] ? '#10b981' : '#64748b'
+              }}
+              title={`${slot.id}: ${slot.label || 'Empty'}`}
+            />
+          )
+        })
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="output"
+          style={{ top: '50%', background: '#64748b' }}
+          title="Connect grid-layout and grid-image first"
+        />
+      )}
     </div>
   )
 }

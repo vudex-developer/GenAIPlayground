@@ -2,9 +2,11 @@ import React, { useRef, useState, useEffect, useCallback } from 'react'
 import { useFlowStore } from '../stores/flowStore'
 import { useIMEInput } from '../hooks/useIMEInput'
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
-import { getImage } from '../utils/indexedDB'
+import { getImage, saveImage } from '../utils/indexedDB'
 import { X } from 'lucide-react'
 import CameraPreview3D from './CameraPreview3D'
+import { getCharacterPresets, getStoryboardPresets, applyPreset } from '../utils/gridPresets'
+import type { GridPreset } from '../types/nodes'
 import type {
   TextPromptNodeData,
   MotionPromptNodeData,
@@ -2285,11 +2287,11 @@ const GridNodeSettings = ({ node, updateNodeData }: any) => {
     const currentData = getCurrentNodeData()
     if (!currentData) return
     
-    // Find all connected prompt nodes
+    // Find all connected prompt nodes (including LLM Prompt!)
     const incomingEdges = edges.filter((e) => e.target === node.id)
     const connectedPromptNodes = incomingEdges
       .map((edge) => nodes.find((n) => n.id === edge.source))
-      .filter((n) => n && (n.type === 'textPrompt' || n.type === 'motionPrompt'))
+      .filter((n) => n && (n.type === 'textPrompt' || n.type === 'motionPrompt' || n.type === 'llmPrompt'))
     
     // Get all prompts and combine them as base
     const allPrompts = connectedPromptNodes
@@ -2298,6 +2300,9 @@ const GridNodeSettings = ({ node, updateNodeData }: any) => {
           return (n!.data as TextPromptNodeData).prompt
         } else if (n!.type === 'motionPrompt') {
           return (n!.data as MotionPromptNodeData).combinedPrompt
+        } else if (n!.type === 'llmPrompt') {
+          // 🎯 LLM Prompt Node의 outputPrompt 사용!
+          return (n!.data as any).outputPrompt || ''
         }
         return ''
       })
@@ -2305,86 +2310,489 @@ const GridNodeSettings = ({ node, updateNodeData }: any) => {
     
     const basePrompt = allPrompts.join(', ')
     
-    // Add EXTREMELY EXPLICIT grid layout instruction with labels
+    console.log(`🔗 [Grid Node] Connected prompt nodes: ${connectedPromptNodes.length}`, connectedPromptNodes.map(n => n!.type))
+    
+    // 🎨 Generate ONE unified grid prompt (AI creates entire grid in single image!)
+    // This is for FAST PREVIEW - not individual high-quality images
     const [rows, cols] = currentData.gridLayout.split('x').map(Number)
-    const totalCells = rows * cols
-    const slotLabels = currentData.slots.map(s => s.id).join(', ')
     
-    const gridInstruction = `
-⚠️ CRITICAL GRID REQUIREMENTS - FOLLOW EXACTLY:
-
-1. GRID STRUCTURE (MANDATORY):
-   - Create EXACTLY ${rows} rows and EXACTLY ${cols} columns
-   - Total cells: EXACTLY ${totalCells} cells (NO MORE, NO LESS)
-   - Grid layout: ${currentData.gridLayout}
-   - ❌ DO NOT create ${totalCells + 1} or more cells
-   - ❌ DO NOT create irregular grid patterns
-   
-2. CELL SIZE (MANDATORY):
-   - ALL cells MUST be IDENTICAL in size
-   - Use equal width and equal height for every cell
-   - Perfect rectangular grid with no exceptions
-   
-3. CELL BORDERS (MANDATORY):
-   - Draw CLEAR, VISIBLE borders between ALL cells
-   - Use thin black or white lines to separate cells
-   - Grid lines must be straight and aligned
-   
-4. CELL LABELS (MANDATORY):
-   - EVERY cell MUST have its ID label in TOP-LEFT corner
-   - Labels: ${slotLabels}
-   - Label text: Large (at least 24px), Bold, White or Black (high contrast)
-   - Label position: 5-10 pixels from top-left corner of each cell
-   - Labels must be CLEARLY READABLE
-   
-5. LAYOUT ORDER:
-   Row 1: ${currentData.slots.slice(0, cols).map(s => s.id).join(', ')}
-   ${rows > 1 ? `Row 2: ${currentData.slots.slice(cols, cols * 2).map(s => s.id).join(', ')}` : ''}
-   ${rows > 2 ? `Row 3: ${currentData.slots.slice(cols * 2, cols * 3).map(s => s.id).join(', ')}` : ''}
-   
-✅ VERIFY: The final image MUST have EXACTLY ${totalCells} cells arranged in ${rows} rows × ${cols} columns.
-
-Subject: ${basePrompt}`
+    // 🔍 Parse slot-specific prompts from base prompt
+    // Format: "S1: prompt1\nS2: prompt2\nS3: prompt3" or "S1: prompt1, S2: prompt2"
+    const slotSpecificPrompts: { [key: string]: string } = {}
+    const parsedCameraParams: { [key: string]: { rotation?: number; tilt?: number; distance?: number } } = {}
+    let hasSlotSpecificPrompts = false
     
-    // Generate prompts for each slot using latest data
-    const newPrompts: { [key: string]: string } = {}
+    // Try to detect slot-specific format
+    console.log(`🔍 [Grid Node Debug] Starting prompt parsing...`)
+    console.log(`📄 Base prompt length: ${basePrompt?.length || 0} characters`)
+    console.log(`📄 Base prompt preview: "${basePrompt?.substring(0, 200) || 'EMPTY'}..."`)
     
-    currentData.slots.forEach((slot, index) => {
-      const rowNum = Math.floor(index / cols) + 1
-      const colNum = (index % cols) + 1
+    // 🔧 Improved parsing: Split by slot markers first
+    if (basePrompt) {
+      // Split by slot identifiers (S1:, S2:, etc.)
+      const slotMarkers = currentData.slots.map(s => s.id).sort((a, b) => {
+        const numA = parseInt(a.replace('S', ''))
+        const numB = parseInt(b.replace('S', ''))
+        return numA - numB
+      })
       
-      let prompt = gridInstruction
+      for (let i = 0; i < slotMarkers.length; i++) {
+        const currentSlot = slotMarkers[i]
+        const nextSlot = i < slotMarkers.length - 1 ? slotMarkers[i + 1] : null
+        
+        // Find start position of current slot
+        const startPattern = new RegExp(`${currentSlot}\\s*[:\\-]`, 'i')
+        const startMatch = basePrompt.match(startPattern)
+        
+        if (startMatch && startMatch.index !== undefined) {
+          const startPos = startMatch.index
+          
+          // Find end position (start of next slot, or end of string)
+          let endPos = basePrompt.length
+          if (nextSlot) {
+            const endPattern = new RegExp(`${nextSlot}\\s*[:\\-]`, 'i')
+            const endMatch = basePrompt.substring(startPos + 1).match(endPattern)
+            if (endMatch && endMatch.index !== undefined) {
+              endPos = startPos + 1 + endMatch.index
+            }
+          }
+          
+          // Extract slot content (remove the "S1:" prefix)
+          let slotContent = basePrompt.substring(startPos, endPos).trim()
+          // Remove the slot marker prefix (S1:, S2:, etc.)
+          slotContent = slotContent.replace(new RegExp(`^${currentSlot}\\s*[:\\-]\\s*`, 'i'), '').trim()
+          
+          if (slotContent.length > 0) {
+            // 🛡️ Prevent duplicates - only add if not already present
+            if (slotSpecificPrompts[currentSlot]) {
+              console.warn(`⚠️ DUPLICATE DETECTED: ${currentSlot} already exists! Skipping...`)
+              console.log(`   Existing length: ${slotSpecificPrompts[currentSlot].length}`)
+              console.log(`   New length: ${slotContent.length}`)
+            } else {
+              slotSpecificPrompts[currentSlot] = slotContent
+              hasSlotSpecificPrompts = true
+              console.log(`✅ Found slot: ${currentSlot}, prompt length: ${slotContent.length}`)
+              console.log(`   Preview: "${slotContent.substring(0, 80)}..."`)
+            }
+          }
+        }
+      }
+    }
+    
+    // Legacy regex fallback (if improved parsing didn't work)
+    if (!hasSlotSpecificPrompts) {
+      const slotPattern = /S(\d+)\s*:\s*([^\n,]+(?:[^\n]*(?=S\d+:|$)))/gi
+      let match
       
-      // Add slot-specific info based on mode
-      if (currentData.mode === 'character') {
-        if (slot.label) prompt += `\n\nCell ${slot.id} (Row ${rowNum}, Column ${colNum}): ${slot.label} view`
-        else prompt += `\n\nCell ${slot.id} (Row ${rowNum}, Column ${colNum})`
-        if (slot.metadata) prompt += `, ${slot.metadata}`
-      } else {
-        // storyboard mode
-        if (slot.label) prompt += `\n\nCell ${slot.id} (Row ${rowNum}, Column ${colNum}): ${slot.label} shot`
-        else prompt += `\n\nCell ${slot.id} (Row ${rowNum}, Column ${colNum})`
-        if (slot.metadata) prompt += `, ${slot.metadata}`
+      while ((match = slotPattern.exec(basePrompt)) !== null) {
+        const slotNum = parseInt(match[1])
+        const slotId = `S${slotNum}`
+        const slotPrompt = match[2].trim()
+        
+        console.log(`✅ Found slot (regex): ${slotId}, prompt length: ${slotPrompt.length}`)
+        
+        if (currentData.slots.some(s => s.id === slotId)) {
+          slotSpecificPrompts[slotId] = slotPrompt
+          hasSlotSpecificPrompts = true
+        }
+      }
+    }
+    
+    // Keep old parsing for camera params
+    for (const [slotId, slotPrompt] of Object.entries(slotSpecificPrompts)) {
+      if (currentData.slots.some(s => s.id === slotId)) {
+        hasSlotSpecificPrompts = true
+        
+        // 🎥 Auto-parse camera parameters from prompt content
+        const parsed = parseCameraFromPrompt(slotPrompt)
+        parsedCameraParams[slotId] = parsed
+        
+        // 🔍 Debug: Show parsed camera info
+        if (parsed.rotation !== undefined || parsed.tilt !== undefined || parsed.distance !== undefined) {
+          console.log(`🎥 Auto-parsed camera for ${slotId}:`, parsed, `from prompt: "${slotPrompt.substring(0, 80)}..."`)
+        } else {
+          console.log(`⚠️ No camera keywords found in ${slotId}: "${slotPrompt.substring(0, 80)}..."`)
+        }
+      }
+    }
+    
+    console.log(`🔍 [Grid Node Debug] Parsing complete. Found ${Object.keys(slotSpecificPrompts).length} slot-specific prompts.`)
+    console.log(`🎥 [Grid Node Debug] Auto-parsed camera for ${Object.keys(parsedCameraParams).length} slots.`)
+    
+    // 🎥 Camera parameter parser function
+    function parseCameraFromPrompt(promptText: string): { rotation?: number; tilt?: number; distance?: number } {
+      const lower = promptText.toLowerCase()
+      const params: { rotation?: number; tilt?: number; distance?: number } = {}
+      
+      // Distance/Framing detection
+      if (lower.includes('extreme close-up') || lower.includes('extreme close up') || lower.includes('ecu')) {
+        params.distance = 0.4
+      } else if (lower.includes('close-up') || lower.includes('close up') || lower.includes('closeup') || lower.includes('tight shot')) {
+        params.distance = 0.6
+      } else if (lower.includes('medium close-up') || lower.includes('medium close up') || lower.includes('mcu')) {
+        params.distance = 0.8
+      } else if (lower.includes('medium shot') || lower.includes('medium wide') || lower.includes('mid shot') || lower.includes('waist up') || lower.includes('waist-up')) {
+        params.distance = 1.0
+      } else if (lower.includes('wide shot') || lower.includes('wide-angle') || lower.includes('wide angle') || lower.includes('establishing') || lower.includes('full body') || lower.includes('full-body')) {
+        params.distance = 2.0
+      } else if (lower.includes('extreme wide') || lower.includes('very wide') || lower.includes('ews') || lower.includes('panoramic')) {
+        params.distance = 2.5
       }
       
-      // Clean up (remove empty commas, extra spaces)
-      prompt = prompt
-        .replace(/^,\s*/, '') // Remove leading comma
-        .replace(/,\s*,/g, ',') // Remove double commas
-        .replace(/\s+/g, ' ') // Remove extra spaces
-        .trim()
+      // Tilt detection (vertical angle)
+      if (lower.includes('low-angle') || lower.includes('low angle')) {
+        // Extract specific degree if mentioned
+        const degreeMatch = lower.match(/low[- ]angle[^\d]*(\d+)(?:°|degrees?)/i)
+        params.tilt = degreeMatch ? -parseInt(degreeMatch[1]) : -30
+      } else if (lower.includes('high-angle') || lower.includes('high angle') || lower.includes('overhead')) {
+        const degreeMatch = lower.match(/high[- ]angle[^\d]*(\d+)(?:°|degrees?)/i)
+        params.tilt = degreeMatch ? parseInt(degreeMatch[1]) : 30
+      } else if (lower.includes('bird\'s eye') || lower.includes('birds eye') || lower.includes('top-down') || lower.includes('top down')) {
+        params.tilt = 60
+      } else if (lower.includes('eye-level') || lower.includes('eye level')) {
+        params.tilt = 0
+      }
       
-      newPrompts[slot.id] = prompt
+      // Rotation detection (horizontal angle)
+      if (lower.includes('front view') || lower.includes('frontal') || lower.includes('facing camera')) {
+        params.rotation = 0
+      } else if (lower.includes('left side profile') || lower.includes('left profile')) {
+        params.rotation = 90
+      } else if (lower.includes('right side profile') || lower.includes('right profile')) {
+        params.rotation = 270
+      } else if (lower.includes('back view') || lower.includes('rear view') || lower.includes('from behind')) {
+        params.rotation = 180
+      } else if (lower.includes('three-quarter left') || lower.includes('three quarter left') || lower.includes('3/4 left')) {
+        params.rotation = 45
+      } else if (lower.includes('three-quarter right') || lower.includes('three quarter right') || lower.includes('3/4 right')) {
+        params.rotation = 315
+      } else if (lower.includes('over-the-shoulder') || lower.includes('over the shoulder') || lower.includes('ots')) {
+        params.rotation = 135 // typical OTS angle
+      }
+      
+      return params
+    }
+    
+    // 📝 If slot-specific prompts detected, use them; otherwise use base prompt for all
+    const getSlotPrompt = (slotId: string) => {
+      if (hasSlotSpecificPrompts && slotSpecificPrompts[slotId]) {
+        return slotSpecificPrompts[slotId]
+      }
+      return basePrompt
+    }
+    
+    // Build unified grid prompt
+    let unifiedPrompt = hasSlotSpecificPrompts ? '' : basePrompt
+    
+    if (basePrompt) unifiedPrompt += '\n\n'
+    
+    // 🎬 Grid Layout Instructions
+    unifiedPrompt += `🎨 CREATE A ${currentData.mode === 'character' ? 'CHARACTER REFERENCE' : 'CINEMATIC SEQUENCE'} GRID:
+Layout: ${rows}x${cols} grid (${rows} rows, ${cols} columns)
+Purpose: ${currentData.mode === 'character' ? 'Fast preview of multiple camera angles' : 'Fast preview of cinematic story sequence'} in ONE image
+
+📐 GRID REQUIREMENTS:
+- Generate ONE single image containing the ENTIRE grid layout
+- ${currentData.mode === 'character' ? 'Same subject/character appears in ALL cells' : 'Sequential cinematic frames showing story progression'}
+- ${currentData.mode === 'character' ? 'Each cell shows a different camera angle/view' : 'Each cell shows the next moment in the story timeline'}
+- Clear visual borders between cells
+- Consistent ${currentData.mode === 'character' ? 'lighting and style' : 'cinematic quality and visual style'} across all cells
+- ${currentData.mode === 'character' ? 'Professional character sheet format' : 'Professional film production quality'}
+
+🎬 VISUAL QUALITY REQUIREMENTS:
+- NOT a sketch or storyboard drawing - create FULLY RENDERED images
+- Photorealistic, high-resolution rendering (match reference image quality if provided)
+- Professional cinematic photography quality
+- Movie production grade visual fidelity
+- Detailed textures, accurate lighting, natural depth of field
+- ${currentData.mode === 'character' ? 'Character design sheet quality' : 'Film frame quality - not concept art'}
+
+`
+    
+    // 🎥 Cell Specifications
+    unifiedPrompt += `🎥 CELL SPECIFICATIONS:\n`
+    
+    currentData.slots.forEach((slot, index) => {
+      const rotation = slot.cameraRotation ?? 0
+      const tilt = slot.cameraTilt ?? 0
+      const distance = slot.cameraDistance ?? 1.0
+      const normalizedRotation = Math.round(((rotation % 360) + 360) % 360)
+      
+      // Calculate grid position
+      const row = Math.floor(index / cols) + 1
+      const col = (index % cols) + 1
+      
+      // 🎯 Get slot-specific prompt if available
+      const slotPrompt = getSlotPrompt(slot.id)
+      
+      let cellDescription = `\n${slot.id} (Row ${row}, Col ${col}): `
+      
+      // Add slot-specific content if parsed
+      if (hasSlotSpecificPrompts && slotPrompt) {
+        cellDescription += slotPrompt
+        
+        // Add camera info if available
+        if (slot.cameraRotation !== undefined) {
+          cellDescription += ' | Camera: '
+          
+          if (normalizedRotation === 0 || normalizedRotation === 360) {
+            cellDescription += 'Front view'
+          } else if (normalizedRotation === 90) {
+            cellDescription += 'Left side profile'
+          } else if (normalizedRotation >= 165 && normalizedRotation <= 195) {
+            cellDescription += 'Back view'
+          } else if (normalizedRotation === 270) {
+            cellDescription += 'Right side profile'
+          } else {
+            cellDescription += `${normalizedRotation}° angle`
+          }
+          
+          if (tilt > 0) {
+            cellDescription += `, high-angle (+${Math.round(tilt)}°)`
+          } else if (tilt < 0) {
+            cellDescription += `, low-angle (${Math.round(tilt)}°)`
+          }
+          
+          if (distance > 1.5) {
+            cellDescription += ', wide shot'
+          } else if (distance < 0.7) {
+            cellDescription += ', close-up'
+          }
+        }
+      } else {
+        // Original logic: camera-based description
+        if (slot.cameraRotation !== undefined) {
+          // Use detailed camera specifications
+          let shotType = ''
+          
+          if (normalizedRotation === 0 || normalizedRotation === 360) {
+            shotType = 'Front view - straight-on frontal shot'
+          } else if (normalizedRotation === 90) {
+            shotType = 'Left side profile - perpendicular side view'
+          } else if (normalizedRotation >= 165 && normalizedRotation <= 195) {
+            shotType = 'Back view - rear view facing away'
+          } else if (normalizedRotation === 270) {
+            shotType = 'Right side profile - perpendicular side view'
+          } else if (normalizedRotation > 0 && normalizedRotation < 90) {
+            shotType = `Three-quarter left view (${normalizedRotation}°)`
+          } else if (normalizedRotation > 90 && normalizedRotation < 180) {
+            shotType = `Three-quarter back-left (${normalizedRotation}°)`
+          } else if (normalizedRotation > 180 && normalizedRotation < 270) {
+            shotType = `Three-quarter back-right (${normalizedRotation}°)`
+          } else {
+            shotType = `Three-quarter right view (${normalizedRotation}°)`
+          }
+          
+          cellDescription += shotType
+          
+          // Add tilt info
+          if (tilt > 0) {
+            cellDescription += `, high-angle (+${Math.round(tilt)}°)`
+          } else if (tilt < 0) {
+            cellDescription += `, low-angle (${Math.round(tilt)}°)`
+          }
+          
+          // Add distance info
+          if (distance > 1.5) {
+            cellDescription += ', wide shot'
+          } else if (distance < 0.7) {
+            cellDescription += ', close-up'
+          }
+          
+          if (slot.metadata) {
+            cellDescription += ` - ${slot.metadata}`
+          }
+        } else {
+          // Fallback: use label/metadata only
+          cellDescription += slot.label || 'View'
+          if (slot.metadata) {
+            cellDescription += ` - ${slot.metadata}`
+          }
+        }
+      }
+      
+      unifiedPrompt += cellDescription
     })
+    
+    // ⚠️ Critical Instructions (mode-specific)
+    unifiedPrompt += `
+
+⚠️ CRITICAL REQUIREMENTS:
+- This is ONE image with EXACTLY ${currentData.slots.length} cells (NOT 9, NOT 3x3)
+- Grid layout: EXACTLY ${rows} rows × ${cols} columns (${rows}x${cols})
+- Total cells: ${currentData.slots.length} cells ONLY
+- Include visible borders/separations between cells
+- Professional ${currentData.mode === 'character' ? 'character reference sheet' : 'storyboard panel'} style
+- All cells should have consistent rendering quality and lighting direction
+- Do NOT generate separate images - create ONE grid image!
+- Do NOT create a 3x3 grid - use ${rows}x${cols} layout!
+`
+
+    if (currentData.mode === 'character') {
+      unifiedPrompt += `
+🎭 CHARACTER MODE REQUIREMENTS:
+- Each cell shows the SAME character from different camera angles/views
+- Maintain PERFECT character consistency across ALL cells:
+  → Same face, hairstyle, body proportions
+  → Same outfit, colors, accessories
+  → Same age and physical features
+- Subject remains in same pose/stance (only camera angle changes)
+- Static character reference - NO story progression
+- Focus: Multi-angle character design reference`
+    } else {
+      unifiedPrompt += `
+🎬 STORYBOARD MODE REQUIREMENTS:
+- Each cell shows a SEQUENTIAL moment in time (story progression)
+- Cells are arranged in CHRONOLOGICAL order (left-to-right, top-to-bottom)
+- Same character(s) but DIFFERENT actions/poses/expressions per cell
+- Show story development:
+  → Opening/establishing → Action → Reaction → Resolution
+  → Build tension and emotion across sequence
+  → Clear beginning, middle, end
+- Maintain character consistency BUT allow:
+  → Different poses and body language
+  → Changing emotions and expressions
+  → Movement and action between frames
+  → Environmental changes if story requires
+- Focus: Narrative flow and cinematic storytelling
+- Think like a film director planning shots
+
+⚠️ CRITICAL: DO NOT CREATE SKETCH-STYLE STORYBOARDS!
+- This is NOT rough concept art or pencil sketches
+- Generate FULLY RENDERED, PHOTOREALISTIC frames
+- Each cell should look like an actual MOVIE SCREENSHOT
+- Same visual quality as the reference image provided
+- Professional VFX/CGI film production quality
+- If you were given a high-quality reference image, MATCH that quality level`
+    }
+    
+    // Store the unified prompt in ALL slots (since Grid Node outputs go to one Nano Banana)
+    const newPrompts: { [key: string]: string } = {}
+    currentData.slots.forEach((slot) => {
+      newPrompts[slot.id] = unifiedPrompt
+    })
+    
+    // 🎥 Apply parsed camera parameters to slots (if detected from prompts)
+    console.log(`🎥 [Camera Application] Starting camera parameter application...`)
+    console.log(`🎥 [Camera Application] Total slots: ${currentData.slots.length}`)
+    console.log(`🎥 [Camera Application] Parsed camera params available for:`, Object.keys(parsedCameraParams))
+    
+    const updatedSlots = currentData.slots.map((slot) => {
+      const parsedParams = parsedCameraParams[slot.id]
+      const existingCamera = { rotation: slot.cameraRotation, tilt: slot.cameraTilt, distance: slot.cameraDistance }
+      
+      console.log(`🎥 [${slot.id}] Existing camera:`, existingCamera)
+      console.log(`🎥 [${slot.id}] Parsed params:`, parsedParams || 'none')
+      
+      if (parsedParams && Object.keys(parsedParams).length > 0) {
+        const newCamera = {
+          rotation: parsedParams.rotation !== undefined ? parsedParams.rotation : (slot.cameraRotation ?? 0),
+          tilt: parsedParams.tilt !== undefined ? parsedParams.tilt : (slot.cameraTilt ?? 0),
+          distance: parsedParams.distance !== undefined ? parsedParams.distance : (slot.cameraDistance ?? 1.0),
+        }
+        console.log(`🎥 [${slot.id}] ✅ Applying parsed camera:`, newCamera)
+        // Merge parsed params with existing slot data (parsed params override preset)
+        return {
+          ...slot,
+          cameraRotation: newCamera.rotation,
+          cameraTilt: newCamera.tilt,
+          cameraDistance: newCamera.distance,
+        }
+      }
+      // If no parsed params, ensure slot has default camera values
+      const defaultCamera = {
+        rotation: slot.cameraRotation ?? 0,
+        tilt: slot.cameraTilt ?? 0,
+        distance: slot.cameraDistance ?? 1.0,
+      }
+      console.log(`🎥 [${slot.id}] ⚠️ No parsed params, using existing/default:`, defaultCamera)
+      return {
+        ...slot,
+        cameraRotation: defaultCamera.rotation,
+        cameraTilt: defaultCamera.tilt,
+        cameraDistance: defaultCamera.distance,
+      }
+    })
+    
+    console.log(`🎥 [Camera Application] Complete! Updated ${updatedSlots.length} slots.`)
     
     // Update with FULL data to preserve everything
     updateNodeData(node.id, {
       ...currentData,
       status: 'completed',
-      generatedPrompts: newPrompts
+      generatedPrompts: newPrompts,
+      slots: updatedSlots  // Apply parsed camera parameters
     })
   }
 
+
+  // Get presets for current mode
+  const availablePresets = data.mode === 'character' ? getCharacterPresets() : getStoryboardPresets()
+
+  const applyPresetTemplate = (preset: GridPreset) => {
+    const currentData = getCurrentNodeData()
+    if (!currentData) return
+    
+    // 🔍 Check if ANY prompt node is connected (LLM or Text)
+    const hasPromptConnection = edges.some((e) => {
+      if (e.target !== node.id) return false
+      const sourceNode = nodes.find((n) => n.id === e.source)
+      return sourceNode?.type === 'llmPrompt' || sourceNode?.type === 'textPrompt'
+    })
+    
+    if (hasPromptConnection) {
+      // 🎥 CAMERA-ONLY MODE: Preserve existing slots, only update camera values
+      const updatedSlots = currentData.slots.map((existingSlot) => {
+        const presetSlot = preset.slots.find(ps => ps.id === existingSlot.id)
+        if (presetSlot) {
+          return {
+            id: existingSlot.id,
+            label: '',  // Clear label to preserve LLM prompts
+            metadata: '',  // Clear metadata to preserve LLM prompts
+            cameraRotation: presetSlot.cameraRotation,
+            cameraTilt: presetSlot.cameraTilt,
+            cameraDistance: presetSlot.cameraDistance,
+          }
+        }
+        return existingSlot
+      })
+      
+      // Update refs
+      slotsRef.current = {}
+      updatedSlots.forEach(slot => {
+        slotsRef.current[slot.id] = { label: '', metadata: '' }
+      })
+      
+      // Apply camera-only update
+      updateNodeData(node.id, {
+        ...currentData,
+        mode: preset.mode,
+        gridLayout: preset.gridLayout,
+        slots: updatedSlots,
+        currentPreset: preset.type,
+        // Keep generated prompts!
+      })
+      
+      console.log(`🎬 Preset applied (Prompt connected: Yes - Camera only, LLM prompts preserved)`)
+    } else {
+      // 🎨 FULL MODE: Apply complete preset including labels
+      const presetData = applyPreset(preset, false)
+      
+      // Update refs with new slots
+      slotsRef.current = {}
+      presetData.slots.forEach(slot => {
+        slotsRef.current[slot.id] = { label: slot.label, metadata: slot.metadata }
+      })
+      
+      // Apply full preset
+      updateNodeData(node.id, {
+        ...currentData,
+        ...presetData,
+      })
+      
+      console.log(`🎬 Preset applied (No prompt connected: Full preset applied)`)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -2396,6 +2804,57 @@ Subject: ${basePrompt}`
         </div>
         <div className="mt-1 text-xs text-slate-500">
           Change mode by clicking the toggle in the node
+        </div>
+      </div>
+
+      {/* 📐 Preset Templates */}
+      <div className="rounded-lg border border-blue-400/30 bg-blue-500/5 p-3">
+        <label className="mb-3 block text-sm font-semibold text-blue-300">
+          📐 Quick Presets
+        </label>
+        
+        {/* Warning: No Camera Parameters */}
+        {data.slots.some(slot => slot.cameraRotation === undefined) && (
+          <div className="mb-3 rounded-lg border border-yellow-400/30 bg-yellow-500/10 p-2.5 text-xs">
+            <div className="mb-1 font-semibold text-yellow-400">⚠️ 구버전 노드 감지</div>
+            <div className="text-yellow-300/80 mb-2">
+              이 노드에는 정밀 카메라 제어가 없습니다.
+            </div>
+            <div className="text-[10px] text-yellow-300/60">
+              💡 아래 프리셋을 클릭하면 Motion Prompt 수준의 정밀 각도 제어가 추가됩니다!
+            </div>
+          </div>
+        )}
+        
+        <div className="space-y-2">
+          {availablePresets.map((preset) => (
+            <button
+              key={preset.type}
+              onClick={() => applyPresetTemplate(preset)}
+              className={`w-full rounded-lg border p-3 text-left transition-all ${
+                data.currentPreset === preset.type
+                  ? 'border-blue-400/50 bg-blue-500/20 shadow-md'
+                  : 'border-white/10 bg-white/5 hover:border-blue-400/30 hover:bg-blue-500/10'
+              }`}
+            >
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-sm font-semibold text-slate-200">
+                  {preset.name}
+                </span>
+                <span className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-mono text-slate-300">
+                  {preset.gridLayout}
+                </span>
+              </div>
+              <div className="text-xs text-slate-400">
+                {preset.description}
+              </div>
+              {data.currentPreset === preset.type && (
+                <div className="mt-1.5 text-[10px] font-semibold text-blue-400">
+                  ✓ Active
+                </div>
+              )}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -2415,7 +2874,11 @@ Subject: ${basePrompt}`
                 newSlots.push({
                   id: `S${i + 1}`,
                   label: '',
-                  metadata: ''
+                  metadata: '',
+                  // 🎥 Add default camera parameters to prevent "구버전 노드" warning
+                  cameraRotation: 0,    // Front view
+                  cameraTilt: 0,        // Eye-level
+                  cameraDistance: 1.0   // Medium shot
                 })
               }
             } else if (newSlots.length > requiredSlots) {
@@ -2445,7 +2908,21 @@ Subject: ${basePrompt}`
         <div className="space-y-2 max-h-64 overflow-y-auto">
           {data.slots.map((slot) => (
             <div key={slot.id} className="rounded-lg border border-white/10 bg-white/5 p-2">
-              <div className="mb-1 text-xs font-semibold text-blue-400">{slot.id}</div>
+              <div className="mb-1 flex items-center justify-between">
+                <div className="text-xs font-semibold text-blue-400">{slot.id}</div>
+                {/* 🎥 Camera Parameters Indicator */}
+                {slot.cameraRotation !== undefined ? (
+                  <div className="flex items-center gap-1 text-[9px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                    🎥 {slot.cameraRotation}°
+                    {slot.cameraTilt !== undefined && slot.cameraTilt !== 0 && ` ${slot.cameraTilt > 0 ? '+' : ''}${slot.cameraTilt}°`}
+                    {slot.cameraDistance !== undefined && slot.cameraDistance !== 1.0 && ` ${slot.cameraDistance}x`}
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">
+                    ⚠️ No Camera
+                  </div>
+                )}
+              </div>
               <div className="space-y-1">
                 <input
                   type="text"
@@ -2487,6 +2964,94 @@ Subject: ${basePrompt}`
         <div className="text-xs text-slate-400">
           {edges.filter((e) => e.target === node.id).length} prompt node(s) connected
         </div>
+        
+        {/* 🎯 Slot-Specific Prompt Detection */}
+        {(() => {
+          const incomingEdges = edges.filter((e) => e.target === node.id)
+          const connectedPromptNodes = incomingEdges
+            .map((edge) => nodes.find((n) => n.id === edge.source))
+            .filter((n) => n && (n.type === 'textPrompt' || n.type === 'motionPrompt' || n.type === 'llmPrompt'))
+          
+          const allPrompts = connectedPromptNodes
+            .map((n) => {
+              if (n!.type === 'textPrompt') {
+                return (n!.data as TextPromptNodeData).prompt
+              } else if (n!.type === 'motionPrompt') {
+                return (n!.data as MotionPromptNodeData).combinedPrompt
+              } else if (n!.type === 'llmPrompt') {
+                return (n!.data as any).outputPrompt || ''
+              }
+              return ''
+            })
+            .filter(p => p.trim().length > 0)
+          
+          const combinedPrompt = allPrompts.join(', ')
+          const slotPattern = /S(\d+)\s*:/gi
+          const matches = combinedPrompt.match(slotPattern)
+          
+          // 🐛 Debug: Show prompt preview
+          const promptPreview = combinedPrompt.substring(0, 200) + (combinedPrompt.length > 200 ? '...' : '')
+          
+          if (matches && matches.length > 0) {
+            // Check if camera parameters will be parsed
+            let cameraParseCount = 0
+            const testPattern = /S(\d+)\s*:\s*([^\n,]+(?:[^\n]*(?=S\d+:|$)))/gi
+            let testMatch
+            while ((testMatch = testPattern.exec(combinedPrompt)) !== null) {
+              const testPrompt = testMatch[2].toLowerCase()
+              if (testPrompt.includes('close-up') || testPrompt.includes('wide') || 
+                  testPrompt.includes('low-angle') || testPrompt.includes('high-angle') ||
+                  testPrompt.includes('front view') || testPrompt.includes('side profile')) {
+                cameraParseCount++
+              }
+            }
+            
+            return (
+              <div className="mt-2 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-2">
+                <div className="flex items-center gap-2 text-xs text-emerald-400">
+                  <span className="font-semibold">🎯 Slot-Specific Prompts Detected!</span>
+                </div>
+                <div className="mt-1 text-[10px] text-emerald-300/80">
+                  {matches.length} slot{matches.length > 1 ? 's' : ''} found: {matches.join(', ')}
+                </div>
+                {cameraParseCount > 0 && (
+                  <div className="mt-1 text-[10px] text-blue-300/80">
+                    🎥 {cameraParseCount} slot{cameraParseCount > 1 ? 's' : ''} with auto-detected camera info
+                  </div>
+                )}
+                <div className="mt-1 text-[9px] text-emerald-300/60">
+                  💡 Each cell will use its specific prompt {cameraParseCount > 0 ? '+ parsed camera parameters' : 'automatically'}
+                </div>
+              </div>
+            )
+          }
+          
+          // No slot-specific prompts detected - show debug info
+          if (combinedPrompt.length > 0) {
+            return (
+              <div className="mt-2 rounded-lg border border-orange-400/30 bg-orange-500/10 p-2">
+                <div className="flex items-center gap-2 text-xs text-orange-400">
+                  <span className="font-semibold">⚠️ No Slot-Specific Prompts Detected</span>
+                </div>
+                <div className="mt-1 text-[10px] text-orange-300/80">
+                  Looking for format: S1:, S2:, S3:, etc.
+                </div>
+                <div className="mt-2 rounded border border-orange-400/20 bg-black/20 p-2">
+                  <div className="text-[9px] text-slate-400 mb-1">Prompt preview:</div>
+                  <div className="text-[9px] text-slate-300 font-mono break-words">
+                    {promptPreview}
+                  </div>
+                </div>
+                <div className="mt-2 text-[9px] text-orange-300/70">
+                  💡 Tip: Use LLM with "Grid Storyboard" mode, or manually format as:<br/>
+                  <code className="bg-black/30 px-1 rounded">S1: [description], S2: [description]...</code>
+                </div>
+              </div>
+            )
+          }
+          
+          return null
+        })()}
       </div>
 
       {/* Generate Prompts Button */}
@@ -2502,26 +3067,50 @@ Subject: ${basePrompt}`
       {Object.keys(data.generatedPrompts).length > 0 && (
         <div className="space-y-2">
           <div className="text-sm font-medium text-slate-300">
-            Generated Prompts ({Object.keys(data.generatedPrompts).length})
+            Generated Unified Prompt
           </div>
-          <div className="max-h-48 overflow-y-auto space-y-1">
-            {data.slots.map((slot) => {
-              const prompt = data.generatedPrompts[slot.id]
-              if (!prompt) return null
-              
-              return (
-                <div key={slot.id} className="rounded border border-blue-400/20 bg-blue-500/5 p-2">
-                  <div className="text-[10px] font-semibold text-blue-400 mb-1">
-                    {slot.id}: {slot.label}
+          
+          {/* 🎯 Show only first slot's prompt (they're all the same unified prompt) */}
+          <div className="max-h-64 overflow-y-auto rounded border border-blue-400/20 bg-blue-500/5 p-3">
+            <div className="text-[10px] text-slate-300 whitespace-pre-wrap font-mono">
+              {data.generatedPrompts[data.slots[0]?.id] || 'No prompt generated'}
+            </div>
+          </div>
+          
+          {/* 📊 Show individual cell specs extracted from unified prompt */}
+          <details className="rounded border border-blue-400/20 bg-blue-500/5">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-blue-400 hover:bg-blue-500/10">
+              📋 Individual Cell Specifications ({data.slots.length})
+            </summary>
+            <div className="p-2 space-y-1 max-h-48 overflow-y-auto">
+              {data.slots.map((slot) => {
+                // Extract this slot's specification from the unified prompt
+                const fullPrompt = data.generatedPrompts[slot.id] || ''
+                const slotPattern = new RegExp(`${slot.id}\\s*\\([^)]+\\):\\s*([^\\n]+(?:[^\\n]*(?=${data.slots.find(s => data.slots.indexOf(s) === data.slots.indexOf(slot) + 1)?.id}|$)))`, 's')
+                const match = fullPrompt.match(slotPattern)
+                const slotSpec = match ? match[1].trim() : `${slot.label} - ${slot.metadata}`
+                
+                return (
+                  <div key={slot.id} className="rounded border border-blue-400/10 bg-blue-500/5 p-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-[10px] font-semibold text-blue-400">{slot.id}</div>
+                      {slot.cameraRotation !== undefined && (
+                        <div className="text-[9px] text-emerald-400">
+                          🎥 {slot.cameraRotation}° {slot.cameraTilt !== 0 && `${slot.cameraTilt > 0 ? '+' : ''}${slot.cameraTilt}°`} {slot.cameraDistance}x
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-300 line-clamp-3">{slotSpec}</div>
                   </div>
-                  <div className="text-[10px] text-slate-300">{prompt}</div>
-                </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
+          </details>
+          
           <div className="text-xs text-slate-500 bg-slate-900/50 border border-white/10 rounded p-2">
-            💡 각 슬롯의 output을 Nano Image Node에 연결하여 이미지를 생성하세요.
+            💡 <strong>통합 프롬프트</strong>가 생성되었습니다. Grid Node → Nano Banana 연결 시 <strong>한 번에 {data.slots.length}개 셀 그리드</strong>를 생성합니다.
           </div>
+          
           <button
             onClick={() => {
               const currentData = getCurrentNodeData()
@@ -2566,17 +3155,29 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
 
   // Sync grid layout info from connected Grid Node
   React.useEffect(() => {
+    console.log('🔍 Cell Regenerator useEffect: Checking grid connection')
     if (connectedGridNode) {
       const gridData = connectedGridNode.data as GridNodeData
+      console.log('📐 Cell Regenerator: Connected Grid Node found')
+      console.log('  - Grid Layout:', gridData.gridLayout)
+      console.log('  - Slots count:', gridData.slots?.length)
+      console.log('  - Current data.gridLayout:', data.gridLayout)
+      console.log('  - Current data.slots:', data.slots)
+      
       if (
         data.gridLayout !== gridData.gridLayout ||
         JSON.stringify(data.slots) !== JSON.stringify(gridData.slots)
       ) {
+        console.log('✅ Cell Regenerator: Updating grid layout and slots')
         updateNodeData(node.id, {
           gridLayout: gridData.gridLayout,
           slots: gridData.slots,
         } as any)
+      } else {
+        console.log('ℹ️ Cell Regenerator: Grid layout already synced')
       }
+    } else {
+      console.log('⚠️ Cell Regenerator: No Grid Node connected to grid-layout handle')
     }
   }, [connectedGridNode, node.id, updateNodeData, data.gridLayout, data.slots])
 
@@ -2609,123 +3210,9 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
   }, [connectedImageNode, node.id, updateNodeData, data.inputImageUrl, data.inputImageDataUrl])
 
   const regenerateCells = async () => {
-    if (!data.gridLayout || !data.slots || data.slots.length === 0) {
-      updateNodeData(node.id, {
-        error: 'Grid Node를 연결하세요!',
-      } as any)
-      return
-    }
-
-    const imageSource = data.inputImageUrl || data.inputImageDataUrl
-    if (!imageSource) {
-      updateNodeData(node.id, {
-        error: '라벨된 그리드 이미지를 연결하세요!',
-      } as any)
-      return
-    }
-
-    updateNodeData(node.id, {
-      status: 'processing',
-      error: undefined,
-    } as any)
-
-    try {
-      // Parse grid layout
-      const [rows, cols] = data.gridLayout.split('x').map(Number)
-
-      // Load image
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve()
-        img.onerror = reject
-        img.src = imageSource
-      })
-
-      const imgWidth = img.width
-      const imgHeight = img.height
-      const cellWidth = imgWidth / cols
-      const cellHeight = imgHeight / rows
-
-      // Initialize API client
-      const key = apiKey || import.meta.env.VITE_GEMINI_API_KEY || ''
-      const client = key ? new GeminiAPIClient(key) : new MockGeminiAPI()
-
-      const newImages: { [key: string]: string } = {}
-
-      // Process each cell
-      for (let i = 0; i < data.slots.length; i++) {
-        const slot = data.slots[i]
-        const row = Math.floor(i / cols)
-        const col = i % cols
-
-        // Create canvas for this cell
-        const canvas = document.createElement('canvas')
-        const ctx = canvas.getContext('2d')
-        if (!ctx) continue
-
-        // Extract cell from grid
-        canvas.width = cellWidth
-        canvas.height = cellHeight
-
-        const sx = col * cellWidth
-        const sy = row * cellHeight
-
-        ctx.drawImage(img, sx, sy, cellWidth, cellHeight, 0, 0, cellWidth, cellHeight)
-
-        // Convert to data URL
-        const cellImageDataUrl = canvas.toDataURL('image/png')
-
-        try {
-          // Regenerate this cell with Gemini API (remove label)
-          const slotDescription = slot.label ? `${slot.label}` : `Cell ${slot.id}`
-          const prompt = `This is a reference image for "${slotDescription}". 
-          
-CRITICAL INSTRUCTIONS:
-1. EXACTLY RECREATE this image composition, maintaining the SAME:
-   - Character pose and position
-   - Camera angle and perspective
-   - Lighting and colors
-   - Style and atmosphere
-   - Framing and crop
-
-2. ONLY REMOVE: Any text labels or ID numbers (like "${slot.id}")
-
-3. Keep everything else IDENTICAL to the reference
-
-The final image should look exactly like this reference, just without any text overlay.`
-          
-          const result = await client.generateImage(
-            prompt,
-            data.aspectRatio,
-            cellImageDataUrl, // Use extracted cell as reference
-            data.model,
-            data.resolution
-          )
-          
-          newImages[slot.id] = result.imageUrl
-        } catch (error) {
-          console.error(`Failed to regenerate cell ${slot.id}:`, error)
-          // Continue with other cells even if one fails
-        }
-      }
-
-      // Check if any images were regenerated
-      if (Object.keys(newImages).length === 0) {
-        throw new Error('모든 셀 재생성에 실패했습니다')
-      }
-
-      updateNodeData(node.id, {
-        status: 'completed',
-        regeneratedImages: newImages,
-      } as any)
-    } catch (error: any) {
-      updateNodeData(node.id, {
-        status: 'error',
-        error: error.message || '셀 재생성에 실패했습니다',
-      } as any)
-    }
+    console.log('🎬 Cell Regenerator: regenerateCells() called - delegating to flowStore')
+    // Delegate to flowStore for centralized logic
+    await store.runCellRegeneratorNode(node.id)
   }
 
   const downloadImage = (slotId: string, label: string) => {
@@ -2764,63 +3251,17 @@ The final image should look exactly like this reference, just without any text o
         </div>
       </div>
 
-      {/* Model Settings */}
-      <div>
-        <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
-        <select
-          value={data.model}
-          onChange={(e) =>
-            updateNodeData(node.id, {
-              model: e.target.value as NanoImageModel,
-            } as any)
-          }
-          className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-purple-400 focus:outline-none focus:ring-1 focus:ring-purple-400"
-        >
-          <option value="gemini-2.5-flash-image">Gemini 2.5 Flash</option>
-          <option value="gemini-3-pro-image-preview">Gemini 3 Pro (Preview)</option>
-        </select>
-      </div>
-
-      {/* Resolution */}
-      <div>
-        <label className="mb-2 block text-sm font-medium text-slate-300">Resolution</label>
-        <select
-          value={data.resolution}
-          onChange={(e) =>
-            updateNodeData(node.id, { resolution: e.target.value as NanoImageResolution } as any)
-          }
-          className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-purple-400 focus:outline-none focus:ring-1 focus:ring-purple-400"
-        >
-          <option value="1K">1K</option>
-          <option value="2K">2K</option>
-          <option value="4K">4K</option>
-        </select>
-      </div>
-
-      {/* Aspect Ratio */}
-      <div>
-        <label className="mb-2 block text-sm font-medium text-slate-300">Aspect Ratio</label>
-        <select
-          value={data.aspectRatio}
-          onChange={(e) =>
-            updateNodeData(node.id, { aspectRatio: e.target.value } as any)
-          }
-          className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-purple-400 focus:outline-none focus:ring-1 focus:ring-purple-400"
-        >
-          <option value="1:1">1:1 (Square)</option>
-          <option value="16:9">16:9 (Landscape)</option>
-          <option value="9:16">9:16 (Portrait)</option>
-          <option value="4:3">4:3</option>
-          <option value="3:4">3:4</option>
-        </select>
-      </div>
-
       {/* Info Box */}
       <div className="rounded border border-purple-400/20 bg-purple-500/5 px-3 py-2 text-xs text-purple-300">
-        💡 이 노드는 라벨이 있는 그리드 이미지를 받아서 각 셀을 라벨 없이 재생성합니다.
+        💡 이 노드는 그리드 이미지를 개별 셀로 분리합니다. 각 셀은 Nano Banana와 연결하여 고화질로 재생성할 수 있습니다.
       </div>
 
-      {/* Regenerate Button */}
+      {/* Storage Alert for users */}
+      <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-200">
+        ⚠️ <b>저장 공간 부족 경고</b>가 뜬다면 설정에서 <b>[저장소 정리]</b>를 먼저 실행해주세요.
+      </div>
+
+      {/* Extract Button */}
       <button
         onClick={regenerateCells}
         disabled={
@@ -2832,17 +3273,17 @@ The final image should look exactly like this reference, just without any text o
         className="w-full rounded-lg bg-purple-500/20 px-3 py-2 text-sm font-medium text-purple-400 transition hover:bg-purple-500/30 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {data.status === 'processing' ? (
-          <span>⏳ Regenerating {data.slots?.length} cells...</span>
+          <span>⏳ Extracting {data.slots?.length} cells...</span>
         ) : (
-          <span>✨ Regenerate {data.slots?.length || 0} Cells</span>
+          <span>✂️ Extract {data.slots?.length || 0} Cells</span>
         )}
       </button>
 
-      {/* Regenerated Images Preview */}
+      {/* Extracted Images Preview */}
       {Object.keys(data.regeneratedImages).length > 0 && (
         <div className="space-y-2">
           <div className="text-sm font-medium text-emerald-400">
-            ✅ {Object.keys(data.regeneratedImages).length} Cells Regenerated
+            ✅ {Object.keys(data.regeneratedImages).length} Cells Extracted
           </div>
           <div className="max-h-96 space-y-2 overflow-y-auto">
             {data.slots?.map((slot) => {
@@ -2852,15 +3293,15 @@ The final image should look exactly like this reference, just without any text o
               return (
                 <div key={slot.id} className="group relative rounded border border-white/10 bg-slate-800 p-2">
                   <div className="mb-1 text-[10px] font-semibold text-purple-400">
-                    {slot.id}: {slot.label}
+                    {slot.id}
                   </div>
                   <img
                     src={imageUrl}
-                    alt={slot.label}
+                    alt={slot.id}
                     className="w-full rounded border border-white/10"
                   />
                   <button
-                    onClick={() => downloadImage(slot.id, slot.label)}
+                    onClick={() => downloadImage(slot.id, slot.id)}
                     className="absolute right-2 top-2 rounded bg-black/60 p-1.5 text-white opacity-0 transition hover:bg-black/80 group-hover:opacity-100"
                     title="Download"
                   >
@@ -3006,7 +3447,6 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
         // 🔧 idb: 또는 s3: 참조를 실제 DataURL로 변환
         if (imageUrl.startsWith('idb:') || imageUrl.startsWith('s3:')) {
           try {
-            const { getImage } = await import('../utils/indexedDB')
             const resolvedUrl = await getImage(imageUrl)
             if (!resolvedUrl) {
               throw new Error(`이미지를 로드할 수 없습니다: ${slot.id}`)
@@ -3148,7 +3588,6 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
       const composedDataUrl = canvas.toDataURL('image/png')
 
       // 🔥 IndexedDB에 저장 (localStorage 용량 절약)
-      const { saveImage } = await import('../utils/indexedDB')
       const imageId = `grid-composed-${node.id}-${Date.now()}`
       console.log('💾 Grid Composer: IndexedDB/S3에 저장 시작...', imageId)
       
@@ -3606,6 +4045,7 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
           </optgroup>
           <optgroup label="특수 작업">
             <option value="cameraInterpreter">🎬 카메라 지시 해석 - 수치를 시각적 설명으로 변환 ⭐</option>
+            <option value="gridStoryboard">🎬 Grid Storyboard - S1:, S2: 형식으로 다중 패널 생성 ⭐</option>
           </optgroup>
           <optgroup label="이미지 전용 분석">
             <option value="describe">🖼️ 이미지 설명 - 이미지를 프롬프트로 변환</option>
@@ -3615,6 +4055,8 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
         <div className="mt-2 rounded-lg border border-pink-400/20 bg-pink-500/5 p-2 text-[11px] text-pink-300">
           {data.mode === 'cameraInterpreter' ? (
             <>🎬 <strong>카메라 해석 모드:</strong> Motion Prompt의 수치를 이미지 생성에 최적화된 상세한 시각적 설명으로 변환합니다!</>
+          ) : data.mode === 'gridStoryboard' ? (
+            <>🎬 <strong>Grid Storyboard 모드:</strong> S1:, S2: 형식으로 다중 패널 스토리보드 생성! Grid Node가 자동으로 파싱하고, 프롬프트 내용에서 카메라 정보도 자동 추출됩니다! ⭐</>
           ) : (
             <>💡 <strong>멀티모달 지원:</strong> 프롬프트 작업 모드는 이미지가 연결되면 자동으로 참고합니다!</>
           )}

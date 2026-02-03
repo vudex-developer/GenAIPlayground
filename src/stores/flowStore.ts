@@ -67,6 +67,7 @@ type FlowState = {
   runNanoImageNode: (id: string) => Promise<void>
   runKlingNode: (id: string) => Promise<void>
   runLLMPromptNode: (id: string) => Promise<void>
+  runCellRegeneratorNode: (id: string) => Promise<void>
   cancelNodeExecution: (id: string) => void
 }
 
@@ -800,6 +801,9 @@ export const useFlowStore = create<FlowState>()(
     // Collect multiple reference images
     const referenceImages: string[] = []
     const referencePrompts: string[] = []
+    let referenceSlotId: string | undefined
+    let referenceSlotLabel: string | undefined
+    let referenceCellRegeneratorId: string | undefined
     const data = current.data as NanoImageNodeData
     const maxRefs = data.maxReferences || 3
     
@@ -825,11 +829,41 @@ export const useFlowStore = create<FlowState>()(
           } else if (refNode.type === 'cellRegenerator') {
             const imgData = refNode.data as any
             // For cell regenerator, try to get image from sourceHandle (e.g., S1, S2, etc.)
-            const cellId = refEdge.sourceHandle
-            if (cellId && imgData.regeneratedImages?.[cellId]) {
-              imageDataUrl = imgData.regeneratedImages[cellId]
-            }
-          }
+            let cellId = refEdge.sourceHandle
+            
+            console.log(`🔍 Nano Image: Checking Cell Regenerator connection`, {
+              sourceHandle: cellId,
+              availableCells: Object.keys(imgData.regeneratedImages || {})
+            })
+
+    // 🩹 Self-healing: If handle is "output" or missing but we have cells, use S1
+    if ((!cellId || cellId === 'output' || !imgData.regeneratedImages?.[cellId]) && 
+        imgData.regeneratedImages && Object.keys(imgData.regeneratedImages).length > 0) {
+      const firstCell = Object.keys(imgData.regeneratedImages)[0]
+      console.warn(`⚠️ Nano Image: Invalid cellId "${cellId}", falling back to "${firstCell}"`)
+      cellId = firstCell
+    }
+
+    if (cellId && imgData.regeneratedImages?.[cellId]) {
+      const imageData = imgData.regeneratedImages[cellId]
+      // 🛡️ CRITICAL: NEVER use raw data URLs if it's too large, must be idb: reference
+      if (imageData.startsWith('data:') && imageData.length > 100000) {
+        console.error('❌ Nano Image: Data URL is too large for state! Use saveImage first.')
+        // In this case, we'll try to use it but warn
+      }
+      imageDataUrl = imageData
+      referenceSlotId = referenceSlotId || cellId
+      referenceSlotLabel =
+        referenceSlotLabel ||
+        imgData.slots?.find((slot: any) => slot.id === cellId)?.label
+      referenceCellRegeneratorId = referenceCellRegeneratorId || refNode.id
+      console.log(`✅ Nano Image: Found cell image for ${cellId}`)
+    } else {
+      console.error(`❌ Nano Image: Could not find image for cell ${cellId}. Stop fallback to prevent full grid output.`)
+      // Stop here - do NOT fall back to other images if this specific handle was requested
+      throw new Error(`연결된 셀(${cellId}) 이미지를 찾을 수 없습니다. Cell Regenerator를 다시 실행해주세요.`)
+    }
+  }
           
           if (imageDataUrl) {
             // 🔥 Convert idb: or s3: reference to actual DataURL
@@ -853,6 +887,57 @@ export const useFlowStore = create<FlowState>()(
             }
           }
         }
+      }
+    }
+
+    // 🧭 If reference comes from Cell Regenerator, prefer slot-specific prompt
+    const normalizedPrompt = (prompt || '').trim()
+    const isSlotOnlyPrompt = /^s\d+$/i.test(normalizedPrompt)
+    // Even more aggressive grid detection
+    const looksLikeGridPrompt =
+      /sequence\s+grid|grid\s*\(|rows?,\s*columns?|story\s*board|storyboard|multi-panel|multi\s+panel|contact\s+sheet/i.test(normalizedPrompt)
+
+    if (referenceSlotId) {
+      let inferredPrompt = ''
+      console.error('🚀🧭 Nano Image: Slot detected! Checking for inference...', {
+        referenceSlotId,
+        normalizedPrompt,
+        isSlotOnlyPrompt,
+        looksLikeGridPrompt
+      })
+
+      if (referenceCellRegeneratorId) {
+        const gridEdge = edges.find(
+          (e) => e.target === referenceCellRegeneratorId && e.targetHandle === 'grid-layout',
+        )
+        const gridNode =
+          gridEdge && get().nodes.find((n) => n.id === gridEdge.source && n.type === 'gridNode')
+        if (gridNode?.type === 'gridNode') {
+          const gridData = gridNode.data as GridNodeData
+          inferredPrompt = gridData.generatedPrompts?.[referenceSlotId] || ''
+          console.error('🚀🧭 Nano Image: Found grid node prompt:', inferredPrompt.substring(0, 50) + '...')
+        }
+      }
+
+      const shouldOverridePrompt =
+        !normalizedPrompt || 
+        normalizedPrompt.length < 5 || 
+        isSlotOnlyPrompt || 
+        looksLikeGridPrompt
+
+      if (shouldOverridePrompt) {
+        if (!inferredPrompt) {
+          const labelText = referenceSlotLabel ? ` (${referenceSlotLabel})` : ''
+          inferredPrompt =
+            `EXACTLY RECREATE this reference image. Remove text labels only.` +
+            ` Maintain composition, lighting, and cinematic style.` +
+            ` Subject: ${referenceSlotId}${labelText}.`
+        }
+
+        prompt = inferredPrompt
+        console.error('✅🚀 Nano Image: Prompt inferred successfully! NEW PROMPT:', prompt)
+      } else {
+        console.error('ℹ️🚀 Nano Image: Using original user prompt')
       }
     }
     
@@ -1558,12 +1643,26 @@ ${enhancedPrompt}`
           console.log('✅ Gemini: Image loaded from storage, size:', dataURL.length, 'chars')
         } else {
           console.error('❌ Gemini: Failed to load image from storage')
-          updateNode((prev) => ({
-            ...prev,
-            status: 'error',
-            error: '이미지를 Storage에서 로드할 수 없습니다.',
-          }))
-          return
+          // 🔥 Fallback: Try to use inputImageUrl (blob URL) if available
+          if (inputImageUrl && inputImageUrl.startsWith('data:')) {
+            console.warn('⚠️ Gemini: Falling back to inputImageUrl (DataURL)')
+            actualInputImageDataUrl = inputImageUrl
+          } else if (inputImageUrl && inputImageUrl.startsWith('blob:')) {
+            console.warn('⚠️ Gemini: inputImageUrl is a blob URL (may be invalid after refresh)')
+            updateNode((prev) => ({
+              ...prev,
+              status: 'error',
+              error: '이미지를 Storage에서 로드할 수 없습니다. 이미지를 다시 생성해주세요.',
+            }))
+            return
+          } else {
+            updateNode((prev) => ({
+              ...prev,
+              status: 'error',
+              error: '이미지를 Storage에서 로드할 수 없습니다. 이미지를 다시 생성해주세요.',
+            }))
+            return
+          }
         }
       } catch (error) {
         console.error('❌ Gemini: Error loading image:', error)
@@ -1678,6 +1777,161 @@ ${enhancedPrompt}`
       set({ abortControllers: new Map(controllers) })
     }
   },
+  runCellRegeneratorNode: async (id) => {
+    const { nodes, edges } = get()
+    const current = nodes.find((node) => node.id === id)
+    if (!current || current.type !== 'cellRegenerator') return
+
+    const data = current.data as any
+    
+    // Update to processing status
+    set({
+      nodes: nodes.map((node) =>
+        node.id === id
+          ? { ...node, data: { ...node.data, status: 'processing', error: undefined } }
+          : node,
+      ),
+    })
+
+    try {
+      // 1. Validate inputs
+      if (!data.gridLayout || !data.slots || data.slots.length === 0) {
+        throw new Error('Grid 정보가 없습니다. Grid Node를 연결해주세요.')
+      }
+
+      // 2. Get input image (resolve storage reference if needed)
+      let inputImageDataUrl = data.inputImageDataUrl || data.inputImageUrl
+      if (!inputImageDataUrl) {
+        throw new Error('Grid 이미지가 없습니다. 이미지를 연결해주세요.')
+      }
+
+      // Resolve storage reference (idb: or s3:)
+      if (inputImageDataUrl.startsWith('idb:') || inputImageDataUrl.startsWith('s3:')) {
+        const resolved = await getImage(inputImageDataUrl)
+        if (!resolved) {
+          throw new Error('이미지를 불러올 수 없습니다.')
+        }
+        inputImageDataUrl = resolved
+      }
+
+      // 3. Parse grid layout
+      const [rows, cols] = data.gridLayout.split('x').map(Number)
+      if (!rows || !cols || rows < 1 || cols < 1) {
+        throw new Error(`잘못된 Grid Layout: ${data.gridLayout}`)
+      }
+
+      console.log(`🔪 Cell Regenerator: Splitting ${rows}x${cols} grid into ${data.slots.length} cells`)
+
+      // 4. Load image
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error('이미지 로드 실패'))
+        img.src = inputImageDataUrl
+      })
+
+      console.log(`📐 Image loaded: ${img.width}x${img.height}`)
+
+      // 5. Calculate cell dimensions
+      const cellWidth = Math.floor(img.width / cols)
+      const cellHeight = Math.floor(img.height / rows)
+
+      console.log(`📦 Cell size: ${cellWidth}x${cellHeight}`)
+
+      // 6. Split into cells
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        throw new Error('Canvas 생성 실패')
+      }
+
+      const regeneratedImages: { [key: string]: string } = {}
+
+      for (let i = 0; i < data.slots.length; i++) {
+        const slot = data.slots[i]
+        const row = Math.floor(i / cols)
+        const col = i % cols
+
+        console.log(`🔍 Processing ${slot.id}: row=${row}, col=${col}, i=${i}`)
+
+        canvas.width = cellWidth
+        canvas.height = cellHeight
+
+        console.log(`📐 Canvas size: ${canvas.width}x${canvas.height}`)
+
+        // Clear canvas
+        ctx.clearRect(0, 0, cellWidth, cellHeight)
+
+        // Calculate source coordinates
+        const sx = col * cellWidth
+        const sy = row * cellHeight
+
+        console.log(`✂️ Cutting from source: sx=${sx}, sy=${sy}, sw=${cellWidth}, sh=${cellHeight}`)
+
+        // Draw cell from source image
+        ctx.drawImage(
+          img,
+          sx,
+          sy,
+          cellWidth,
+          cellHeight,
+          0,
+          0,
+          cellWidth,
+          cellHeight,
+        )
+
+        // Convert to data URL (JPEG for better compression)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
+
+        console.log(`💾 Generated dataURL length: ${dataUrl.length}`)
+
+        // Save to storage
+        const imageId = `cell-${id}-${slot.id}-${Date.now()}`
+        const storageRef = await saveImage(imageId, dataUrl, id, true)
+
+        regeneratedImages[slot.id] = storageRef
+        console.log(`✅ Cell ${slot.id} saved: ${storageRef}`)
+      }
+
+      // 7. Update node data
+      set({
+        nodes: nodes.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  regeneratedImages,
+                  status: 'success',
+                  error: undefined,
+                },
+              }
+            : node,
+        ),
+      })
+
+      console.log(`✅ Cell Regenerator: Successfully separated ${data.slots.length} cells`)
+    } catch (error) {
+      console.error('❌ Cell Regenerator error:', error)
+      set({
+        nodes: nodes.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'error',
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              }
+            : node,
+        ),
+      })
+    }
+  },
   runKlingNode: async (id) => {
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
@@ -1727,14 +1981,28 @@ ${enhancedPrompt}`
       })
     }
 
+    const imageNodeTypes = new Set(['imageImport', 'nanoImage', 'gridComposer', 'cellRegenerator'])
+    
     // Start Image (기본 이미지) - 'start' 핸들 또는 핸들 ID 없는 연결
     const startImageEdges = edges.filter(
       (e) => e.target === id && (!e.targetHandle || e.targetHandle === 'start')
     )
+    const hasStartImageEdge = startImageEdges.length > 0
+    
+    const imageIncomingEdges = edges.filter((e) => {
+      if (e.target !== id) return false
+      const node = nodes.find((n) => n.id === e.source)
+      return imageNodeTypes.has(node?.type ?? '')
+    })
+    
+    console.log('🔍 Kling: Start image edges found:', startImageEdges.length)
+    
     const startImageNode = startImageEdges.find((e) => {
       const node = nodes.find((n) => n.id === e.source)
-      return node?.type === 'imageImport' || node?.type === 'nanoImage' || node?.type === 'gridComposer'
+      console.log(`🔍 Kling: Checking source node ${e.source} type: ${node?.type}`)
+      return imageNodeTypes.has(node?.type ?? '')
     })
+    
     const startImageNodeData = startImageNode ? nodes.find((n) => n.id === startImageNode.source) : undefined
     
     // End Image (끝 프레임) - 'end' 핸들 연결
@@ -1743,7 +2011,7 @@ ${enhancedPrompt}`
     )
     const endImageNode = endImageEdges.find((e) => {
       const node = nodes.find((n) => n.id === e.source)
-      return node?.type === 'imageImport' || node?.type === 'nanoImage' || node?.type === 'gridComposer'
+      return node?.type === 'imageImport' || node?.type === 'nanoImage' || node?.type === 'gridComposer' || node?.type === 'cellRegenerator'
     })
     const endImageNodeData = endImageNode ? nodes.find((n) => n.id === endImageNode.source) : undefined
 
@@ -1758,31 +2026,74 @@ ${enhancedPrompt}`
     let inputImageDataUrl: string | undefined
     
     if (startImageNodeData?.type === 'imageImport') {
-      inputImageUrl = (startImageNodeData.data as ImageImportNodeData).imageUrl
-      inputImageDataUrl = (startImageNodeData.data as ImageImportNodeData).imageDataUrl
+      const imgData = startImageNodeData.data as ImageImportNodeData
+      inputImageUrl = imgData.imageUrl
+      inputImageDataUrl = imgData.imageDataUrl
     } else if (startImageNodeData?.type === 'nanoImage') {
-      inputImageUrl = (startImageNodeData.data as NanoImageNodeData).outputImageUrl
-      inputImageDataUrl = (startImageNodeData.data as NanoImageNodeData).outputImageDataUrl
+      const imgData = startImageNodeData.data as NanoImageNodeData
+      inputImageUrl = imgData.outputImageUrl
+      inputImageDataUrl = imgData.outputImageDataUrl
     } else if (startImageNodeData?.type === 'gridComposer') {
       const imgData = startImageNodeData.data as any
       inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
       inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+    } else if (startImageNodeData?.type === 'cellRegenerator') {
+      const imgData = startImageNodeData.data as any
+      // For cell regenerator, try to get image from sourceHandle (e.g., S1, S2, etc.)
+      const cellId = startImageNode?.sourceHandle
+      if (cellId && imgData.regeneratedImages?.[cellId]) {
+        inputImageDataUrl = imgData.regeneratedImages[cellId]
+        inputImageUrl = inputImageDataUrl
+      } else {
+        // Fallback: use first available cell
+        const firstCellId = Object.keys(imgData.regeneratedImages || {})[0]
+        if (firstCellId) {
+          inputImageDataUrl = imgData.regeneratedImages[firstCellId]
+          inputImageUrl = inputImageDataUrl
+        }
+      }
     }
+    
+    if (!inputImageDataUrl && inputImageUrl) {
+      if (
+        inputImageUrl.startsWith('data:') ||
+        inputImageUrl.startsWith('idb:') ||
+        inputImageUrl.startsWith('s3:')
+      ) {
+        inputImageDataUrl = inputImageUrl
+      }
+    }
+    
+    console.log('🔍 Kling: Final start image data:', { 
+      nodeType: startImageNodeData?.type,
+      hasImageUrl: !!inputImageUrl,
+      hasImageDataUrl: !!inputImageDataUrl,
+      imageDataUrlPrefix: inputImageDataUrl?.substring(0, 20)
+    })
     
     // End Image 데이터
     let endImageUrl: string | undefined
     let endImageDataUrl: string | undefined
     
     if (endImageNodeData?.type === 'imageImport') {
-      endImageUrl = (endImageNodeData.data as ImageImportNodeData).imageUrl
-      endImageDataUrl = (endImageNodeData.data as ImageImportNodeData).imageDataUrl
+      const imgData = endImageNodeData.data as ImageImportNodeData
+      endImageUrl = imgData.imageUrl
+      endImageDataUrl = imgData.imageDataUrl
     } else if (endImageNodeData?.type === 'nanoImage') {
-      endImageUrl = (endImageNodeData.data as NanoImageNodeData).outputImageUrl
-      endImageDataUrl = (endImageNodeData.data as NanoImageNodeData).outputImageDataUrl
+      const imgData = endImageNodeData.data as NanoImageNodeData
+      endImageUrl = imgData.outputImageUrl
+      endImageDataUrl = imgData.outputImageDataUrl
     } else if (endImageNodeData?.type === 'gridComposer') {
       const imgData = endImageNodeData.data as any
       endImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
       endImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+    } else if (endImageNodeData?.type === 'cellRegenerator') {
+      const imgData = endImageNodeData.data as any
+      const cellId = endImageNode?.sourceHandle
+      if (cellId && imgData.regeneratedImages?.[cellId]) {
+        endImageDataUrl = imgData.regeneratedImages[cellId]
+        endImageUrl = endImageDataUrl
+      }
     }
 
     const inputPrompt =
@@ -1804,11 +2115,32 @@ ${enhancedPrompt}`
       return
     }
     
+    if (!hasStartImageEdge) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error:
+          imageIncomingEdges.length > 0
+            ? 'Start Image는 파란 Start 핸들에 연결해 주세요.'
+            : 'Start Image 노드를 연결해 주세요.',
+      }))
+      return
+    }
+    
+    if (!startImageNode) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'Start Image에는 이미지 노드만 연결할 수 있습니다.',
+      }))
+      return
+    }
+    
     if (!inputImageDataUrl) {
       updateNode((prev) => ({
         ...prev,
         status: 'error',
-        error: 'Start Image 노드를 연결해 주세요.',
+        error: 'Start Image 노드가 연결되었지만 이미지가 생성되지 않았습니다. 이미지 노드에서 "Generate" 버튼을 눌러주세요.',
       }))
       return
     }
@@ -1847,12 +2179,26 @@ ${enhancedPrompt}`
           console.log('✅ Kling: Start image type:', dataURL.substring(0, 50))
         } else {
           console.error('❌ Kling: Failed to load start image from storage (returned null/undefined)')
-          updateNode((prev) => ({
-            ...prev,
-            status: 'error',
-            error: 'Start 이미지를 Storage에서 로드할 수 없습니다. 이미지를 다시 생성해주세요.',
-          }))
-          return
+          // 🔥 Fallback: Try to use inputImageUrl (blob URL) if available
+          if (inputImageUrl && inputImageUrl.startsWith('data:')) {
+            console.warn('⚠️ Kling: Falling back to inputImageUrl (DataURL)')
+            actualStartImageDataUrl = inputImageUrl
+          } else if (inputImageUrl && inputImageUrl.startsWith('blob:')) {
+            console.warn('⚠️ Kling: inputImageUrl is a blob URL (may be invalid after refresh)')
+            updateNode((prev) => ({
+              ...prev,
+              status: 'error',
+              error: 'Start 이미지를 Storage에서 로드할 수 없습니다. 이미지를 다시 생성해주세요.',
+            }))
+            return
+          } else {
+            updateNode((prev) => ({
+              ...prev,
+              status: 'error',
+              error: 'Start 이미지를 Storage에서 로드할 수 없습니다. 이미지를 다시 생성해주세요.',
+            }))
+            return
+          }
         }
       } catch (error) {
         console.error('❌ Kling: Error loading start image:', error)
@@ -1928,6 +2274,13 @@ ${enhancedPrompt}`
       })
     }, 1000)
 
+    // 🩹 Truncate prompt if it's too long (Kling API limit: 2500 chars)
+    let finalPrompt = inputPrompt
+    if (finalPrompt.length > 2450) {
+      console.warn(`⚠️ Kling: Prompt too long (${finalPrompt.length} chars), truncating to 2450`)
+      finalPrompt = finalPrompt.substring(0, 2450)
+    }
+
     try {
       if (abortController.signal.aborted) {
         throw new Error('작업이 취소되었습니다.')
@@ -1946,7 +2299,7 @@ ${enhancedPrompt}`
       // ✅ Apply retry logic
       const outputVideoUrl = await retryWithBackoff(
         () => client.generateVideo(
-          inputPrompt,
+          finalPrompt,
           actualStartImageDataUrl,
           {
             duration: settings.duration,
@@ -2478,6 +2831,78 @@ ${enhancedPrompt}`
         systemInstruction = `You are a professional translator. Translate the given prompt between Korean and English, maintaining all important details and nuances.`
       } else if (data.mode === 'simplify') {
         systemInstruction = `You are a professional editor. Simplify the given prompt to its core essence while maintaining effectiveness for AI ${data.targetUse} generation.`
+      } else if (data.mode === 'gridStoryboard') {
+        systemInstruction = `You are a professional storyboard artist and prompt engineer specializing in multi-panel cinematic sequences for Grid Node.
+
+🎬 YOUR MISSION:
+Transform user ideas into structured grid storyboard prompts with the EXACT format required by Grid Node for automatic slot parsing.
+
+⚠️ CRITICAL OUTPUT FORMAT REQUIREMENTS:
+You MUST output in this EXACT format for Grid Node slot detection:
+
+S1: [First panel description with camera details]
+S2: [Second panel description with camera details]
+S3: [Third panel description with camera details]
+... (continue for all panels)
+
+📐 EACH PANEL DESCRIPTION MUST INCLUDE:
+1. Camera shot type (wide-angle, medium, close-up, extreme close-up)
+2. Camera angle (low-angle, high-angle, eye-level, overhead)
+3. Camera position (static, tracking, dolly, crane shot if relevant)
+4. Scene content (what's happening in this specific panel)
+5. Character expression/emotion (for character continuity)
+6. Lighting/mood (for cinematic consistency)
+
+🎨 PANEL DESCRIPTIONS MUST BE:
+- Self-contained (each panel is fully described independently)
+- Cinematically diverse (vary shot types, angles, distances across panels)
+- Story-progressive (clear narrative flow from S1 → S2 → S3 → ...)
+- Character-consistent (same character appearance across all panels)
+- Camera-specific (explicitly state camera position/angle for EACH panel)
+
+📝 EXAMPLE OUTPUT FORMAT:
+
+S1: Wide-angle establishing shot at eye-level. A lone astronaut stands in a pristine spacecraft cockpit, her expression calm but focused. Natural interior lighting creates soft shadows across her worn flight suit. Camera is static, positioned to show the full environment context.
+
+S2: Medium shot from a slightly elevated angle. The astronaut is now seated, hands moving over illuminated control panels with deliberate precision. Warm instrument glow illuminates her face from below. Camera remains static, focusing on her methodical actions.
+
+S3: Close-up shot at eye-level, focused on gloved hands hovering over an engine ignition button. Extreme detail on the button's surface and the slight tremor of anticipation. Tight framing emphasizes the critical moment. Static camera creates tension through restraint.
+
+S4: Wide-angle shot from inside the cockpit, looking through the observation window. Earth appears distant and serene in the frame's background. The astronaut's silhouette is visible in profile, watching silently. Low ambient lighting from space creates a contemplative mood.
+
+⚠️ CRITICAL RULES:
+1. ALWAYS use "S1:", "S2:", "S3:" format (with colon!)
+2. NEVER skip slot numbers (must be sequential: S1, S2, S3, S4...)
+3. NEVER duplicate slot numbers (each slot ID appears EXACTLY ONCE)
+4. Separate each slot with EXACTLY 2 blank lines (double line break)
+5. NO special characters or formatting between slot marker and description
+6. ALWAYS include camera information in EACH panel
+7. Maintain character/style consistency across ALL panels
+8. Vary camera shots for cinematic diversity (don't repeat same angle)
+9. Keep each panel description detailed but focused
+
+🚨 PARSING REQUIREMENTS FOR GRID NODE:
+- Format: "S[NUMBER]: [description]"
+- No spaces before/after colon
+- Slot marker must be at the START of a new paragraph
+- Each description continues until the next slot marker or end of text
+- Maximum one description per slot ID
+- Grid Node parser will FAIL if slots are duplicated or misnumbered
+
+🎯 SHOT VARIETY GUIDELINES:
+- Mix wide (establishing), medium (action), close-up (emotion)
+- Vary angles (low, high, eye-level) for visual interest
+- Use distance changes (zoom in/out) for pacing
+- Static shots for contemplation, moving shots for action
+
+💡 USER INPUT INTERPRETATION:
+- If user provides rough idea: Expand into full multi-panel sequence
+- If user provides detailed description: Structure it into S1:, S2: format
+- If user specifies panel count: Match exactly (e.g., 2x2 = 4 panels, 3x3 = 9 panels)
+- If unclear: Default to logical story progression with 4-6 panels
+
+🎬 Your output will be directly parsed by Grid Node - DO NOT deviate from S1:, S2: format!`
+
       } else if (data.mode === 'cameraInterpreter') {
         systemInstruction = `You are a professional cinematographer and prompt engineer specializing in camera angle interpretation for AI image generation.
 

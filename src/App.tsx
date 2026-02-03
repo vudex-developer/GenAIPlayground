@@ -7,7 +7,7 @@ import { OnboardingGuide } from './components/OnboardingGuide'
 import { useFlowStore } from './stores/flowStore'
 import { useNetworkStatus } from './hooks/useNetworkStatus'
 import { useImagePersistence } from './hooks/useImagePersistence'
-import { getStorageInfo, analyzeStorage, clearStorageByPattern } from './utils/storage'
+import { getStorageInfo, analyzeStorage, clearStorageByPattern, cleanupOldBackups } from './utils/storage'
 import { getAllBackups, restoreBackup, getBackupStats } from './utils/backup'
 import { getStorageStats as getIndexedDBStats } from './utils/indexedDB'
 import type { WorkflowEdge, WorkflowNode } from './types/nodes'
@@ -70,6 +70,23 @@ function App() {
     }
     
     checkS3Config()
+  }, [])
+  
+  // 🧹 앱 시작 시 즉시 백업 정리 (최신 3개만 유지)
+  useEffect(() => {
+    console.log('🧹 앱 시작 시 백업 정리...')
+    const storageInfo = getStorageInfo()
+    
+    // localStorage가 70% 이상이면 즉시 백업 정리
+    if (storageInfo.percentage > 70) {
+      console.warn(`⚠️ localStorage ${storageInfo.percentage.toFixed(1)}% 사용 중, 백업 정리 중...`)
+      const deleted = cleanupOldBackups()
+      console.log(`✅ 백업 ${deleted}개 삭제 완료`)
+      
+      // 정리 후 다시 확인
+      const afterInfo = getStorageInfo()
+      console.log(`📊 정리 후: ${afterInfo.percentage.toFixed(1)}% (${afterInfo.usedMB} MB / ${afterInfo.limitMB} MB)`)
+    }
   }, [])
   
   // 🧹 자동 정리 스케줄러 (매일 1회)
