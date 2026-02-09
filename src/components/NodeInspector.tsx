@@ -21,6 +21,7 @@ import type {
   GridLayout,
   NanoImageModel,
   NanoImageResolution,
+  SoraVideoNodeData,
 } from '../types/nodes'
 
 const NodeInspector = () => {
@@ -88,6 +89,8 @@ const NodeInspector = () => {
         return <GeminiVideoSettings node={selectedNode} updateNodeData={updateNodeData} />
       case 'klingVideo':
         return <KlingVideoSettings node={selectedNode} updateNodeData={updateNodeData} />
+      case 'soraVideo':
+        return <SoraVideoSettings node={selectedNode} updateNodeData={updateNodeData} />
       case 'gridNode':
         return <GridNodeSettings node={selectedNode} updateNodeData={updateNodeData} />
       case 'cellRegenerator':
@@ -1468,7 +1471,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
           ? 'v1 Pro · Enhanced quality'
           : data.model === 'kling-v2-5'
             ? 'v2.5 · Advanced'
-            : 'v2.6 · Latest flagship'
+            : 'v2.6 · Latest'
 
   return (
     <div className="space-y-4">
@@ -1621,6 +1624,138 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
               const link = document.createElement('a')
               link.href = data.outputVideoUrl!
               link.download = 'kling-video.mp4'
+              link.click()
+            }}
+            className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10"
+          >
+            Download
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const SoraVideoSettings = ({ node, updateNodeData }: any) => {
+  const data = node.data as SoraVideoNodeData
+  const runSoraNode = useFlowStore((state) => state.runSoraNode)
+  const cancelNodeExecution = useFlowStore((state) => state.cancelNodeExecution)
+
+  const getStatusText = (status: string) => {
+    switch (status) {
+      case 'processing': return 'Generating...'
+      case 'completed': return 'Completed'
+      case 'error': return 'Error'
+      default: return 'Ready'
+    }
+  }
+
+  const modelHint =
+    data.model === 'sora-2'
+      ? 'Fast generation'
+      : 'High quality'
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
+        <select
+          value={data.model}
+          onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="sora-2">Sora 2 (Fast)</option>
+          <option value="sora-2-pro">Sora 2 Pro (High Quality)</option>
+        </select>
+        <div className="mt-1 text-xs text-slate-500">{modelHint}</div>
+      </div>
+
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Duration</label>
+        <select
+          value={data.duration}
+          onChange={(e) => updateNodeData(node.id, { duration: Number(e.target.value) })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="4">4 seconds</option>
+          <option value="8">8 seconds</option>
+          <option value="12">12 seconds</option>
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Resolution</label>
+        <select
+          value={data.resolution}
+          onChange={(e) => updateNodeData(node.id, { resolution: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="1280x720">1280x720 (Landscape)</option>
+          <option value="720x1280">720x1280 (Portrait)</option>
+          <option value="1792x1024">1792x1024 (Wide Landscape)</option>
+          <option value="1024x1792">1024x1792 (Tall Portrait)</option>
+        </select>
+      </div>
+
+      <div>
+        <div className="mb-2 text-sm font-medium text-slate-300">Status</div>
+        <div className={`rounded-lg border p-3 text-sm ${
+          data.status === 'completed' ? 'border-green-500/30 bg-green-500/10 text-green-400' :
+          data.status === 'processing' ? 'border-orange-500/30 bg-orange-500/10 text-orange-400' :
+          data.status === 'error' ? 'border-red-500/30 bg-red-500/10 text-red-400' :
+          'border-white/10 bg-white/5 text-slate-400'
+        }`}>
+          {getStatusText(data.status)}
+          {data.status === 'processing' && data.progress > 0 && ` (${data.progress}%)`}
+        </div>
+      </div>
+
+      {data.error && (
+        <div className={`rounded-lg border p-3 text-sm ${
+          data.error.includes('할당량') || data.error.includes('quota')
+            ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400'
+            : 'border-red-500/30 bg-red-500/10 text-red-400'
+        }`}>
+          {data.error}
+        </div>
+      )}
+
+      {data.outputVideoUrl && (
+        <div>
+          <div className="mb-2 text-sm font-medium text-slate-300">Preview</div>
+          <div className="overflow-auto rounded-lg border border-white/10">
+            <video
+              src={data.outputVideoUrl}
+              controls
+              className="w-full"
+              style={{ maxHeight: '600px' }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {data.status === 'processing' ? (
+          <button
+            onClick={() => cancelNodeExecution(node.id)}
+            className="flex-1 rounded-lg bg-red-500/20 px-3 py-2 text-sm font-medium text-red-400 transition hover:bg-red-500/30"
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            onClick={() => void runSoraNode(node.id)}
+            className="flex-1 rounded-lg bg-orange-500/20 px-3 py-2 text-sm font-medium text-orange-400 transition hover:bg-orange-500/30"
+          >
+            Generate
+          </button>
+        )}
+        {data.outputVideoUrl && (
+          <button
+            onClick={() => {
+              const link = document.createElement('a')
+              link.href = data.outputVideoUrl!
+              link.download = 'sora-video.mp4'
               link.click()
             }}
             className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10"
@@ -3195,6 +3330,10 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
         const importData = connectedImageNode.data as ImageImportNodeData
         imageUrl = importData.imageUrl
         imageDataUrl = importData.imageDataUrl
+      } else if (connectedImageNode.type === 'gridComposer') {
+        const composerData = connectedImageNode.data as GridComposerNodeData
+        imageUrl = composerData.composedImageUrl
+        imageDataUrl = composerData.composedImageDataUrl
       }
 
       if (
@@ -3256,6 +3395,98 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
         💡 이 노드는 그리드 이미지를 개별 셀로 분리합니다. 각 셀은 Nano Banana와 연결하여 고화질로 재생성할 수 있습니다.
       </div>
 
+      {/* Model Selection */}
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
+        <select
+          value={data.model}
+          onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="gemini-3-pro-image-preview">Gemini 3 Pro (Recommended)</option>
+          <option value="gemini-2.5-flash-image">Gemini 2.5 Flash (Fast)</option>
+        </select>
+      </div>
+
+      {/* Resolution Selection */}
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Resolution</label>
+        <select
+          value={data.resolution}
+          onChange={(e) => updateNodeData(node.id, { resolution: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="1K">1K (Fast)</option>
+          <option value="2K">2K (Balanced)</option>
+          <option value="4K">4K (High Quality)</option>
+        </select>
+      </div>
+
+      {/* Aspect Ratio Selection */}
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Aspect Ratio</label>
+        <select
+          value={data.aspectRatio}
+          onChange={(e) => updateNodeData(node.id, { aspectRatio: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="1:1">1:1 (Square)</option>
+          <option value="16:9">16:9 (Landscape)</option>
+          <option value="9:16">9:16 (Portrait)</option>
+          <option value="4:3">4:3 (Classic)</option>
+          <option value="3:4">3:4 (Classic Portrait)</option>
+        </select>
+      </div>
+
+      {/* Slot Selection */}
+      {data.slots && data.slots.length > 0 && (
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-sm font-medium text-slate-300">Extract Cells</label>
+            <button
+              onClick={() => {
+                const allSelected = (data.selectedSlots || []).length === data.slots!.length
+                updateNodeData(node.id, {
+                  selectedSlots: allSelected ? [] : data.slots!.map((s: any) => s.id),
+                } as any)
+              }}
+              className="text-[10px] text-purple-400 hover:text-purple-300 transition"
+            >
+              {(data.selectedSlots || []).length === data.slots.length ? 'Deselect All' : 'Select All'}
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {data.slots.map((slot: any) => {
+              const isSelected = (data.selectedSlots || []).includes(slot.id)
+              return (
+                <button
+                  key={slot.id}
+                  onClick={() => {
+                    const current = data.selectedSlots || []
+                    const updated = isSelected
+                      ? current.filter((id: string) => id !== slot.id)
+                      : [...current, slot.id]
+                    updateNodeData(node.id, { selectedSlots: updated } as any)
+                  }}
+                  className={`rounded border px-2 py-1.5 text-[10px] font-medium transition ${
+                    isSelected
+                      ? 'border-purple-400/50 bg-purple-500/20 text-purple-300'
+                      : 'border-white/10 bg-white/5 text-slate-500 hover:border-white/20'
+                  }`}
+                >
+                  {slot.id}
+                </button>
+              )
+            })}
+          </div>
+          <div className="mt-1 text-[10px] text-slate-500">
+            {(data.selectedSlots || []).length === 0
+              ? '선택 없음 = 전체 추출'
+              : `${(data.selectedSlots || []).length}개 셀 선택됨`}
+          </div>
+        </div>
+      )}
+
       {/* Storage Alert for users */}
       <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-200">
         ⚠️ <b>저장 공간 부족 경고</b>가 뜬다면 설정에서 <b>[저장소 정리]</b>를 먼저 실행해주세요.
@@ -3273,9 +3504,9 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
         className="w-full rounded-lg bg-purple-500/20 px-3 py-2 text-sm font-medium text-purple-400 transition hover:bg-purple-500/30 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {data.status === 'processing' ? (
-          <span>⏳ Extracting {data.slots?.length} cells...</span>
+          <span>⏳ Extracting...</span>
         ) : (
-          <span>✂️ Extract {data.slots?.length || 0} Cells</span>
+          <span>✂️ Extract {(data.selectedSlots || []).length > 0 ? (data.selectedSlots || []).length : data.slots?.length || 0} Cells</span>
         )}
       </button>
 

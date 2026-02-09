@@ -10,6 +10,7 @@ import {
 } from 'reactflow'
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
 import { KlingAPIClient, MockKlingAPI } from '../services/klingAPI'
+import { SoraAPIClient, MockSoraAPI } from '../services/soraAPI'
 import { retryWithBackoff } from '../utils/retry'
 import { getStorageInfo, prepareForStorage, getStorageWarning } from '../utils/storage'
 import { createBackup } from '../utils/backup'
@@ -23,6 +24,7 @@ import type {
   NanoImageNodeData,
   NodeData,
   NodeType,
+  SoraVideoNodeData,
   TextPromptNodeData,
   WorkflowEdge,
   WorkflowNode,
@@ -66,6 +68,7 @@ type FlowState = {
   runGeminiNode: (id: string) => Promise<void>
   runNanoImageNode: (id: string) => Promise<void>
   runKlingNode: (id: string) => Promise<void>
+  runSoraNode: (id: string) => Promise<void>
   runLLMPromptNode: (id: string) => Promise<void>
   runCellRegeneratorNode: (id: string) => Promise<void>
   cancelNodeExecution: (id: string) => void
@@ -86,6 +89,8 @@ const getEdgeClass = (edge: WorkflowEdge, nodes: WorkflowNode[]) => {
       return 'edge-gemini-video'
     case 'klingVideo':
       return 'edge-kling-video'
+    case 'soraVideo':
+      return 'edge-sora-video'
     case 'gridNode':
       return 'edge-text-prompt' // Use violet color
     case 'cellRegenerator':
@@ -156,6 +161,13 @@ const isConnectionAllowed = (sourceType: NodeType, targetType: NodeType) => {
   if (sourceType === 'gridComposer' && targetType === 'imageImport') return true
   if (sourceType === 'gridComposer' && targetType === 'geminiVideo') return true
   if (sourceType === 'gridComposer' && targetType === 'klingVideo') return true
+  // Sora Video connections
+  if (sourceType === 'motionPrompt' && targetType === 'soraVideo') return true
+  if (sourceType === 'textPrompt' && targetType === 'soraVideo') return true
+  if (sourceType === 'nanoImage' && targetType === 'soraVideo') return true
+  if (sourceType === 'imageImport' && targetType === 'soraVideo') return true
+  if (sourceType === 'gridComposer' && targetType === 'soraVideo') return true
+  if (sourceType === 'llmPrompt' && targetType === 'soraVideo') return true
   // LLM Prompt connections
   if (sourceType === 'textPrompt' && targetType === 'llmPrompt') return true
   if (sourceType === 'motionPrompt' && targetType === 'llmPrompt') return true
@@ -806,107 +818,127 @@ export const useFlowStore = create<FlowState>()(
     let referenceCellRegeneratorId: string | undefined
     const data = current.data as NanoImageNodeData
     const maxRefs = data.maxReferences || 3
-    
-    // Check each ref-N handle
+
+    // 🔍 Debug: Log ALL edges for this node
+    const allEdgesToThisNode = edges.filter((e) => e.target === id)
+    console.log(`🔍 Nano Image [${id}]: ALL incoming edges:`, allEdgesToThisNode.map((e) => ({
+      source: e.source,
+      sourceHandle: e.sourceHandle,
+      targetHandle: e.targetHandle,
+      sourceType: get().nodes.find((n) => n.id === e.source)?.type,
+    })))
+
+    // Helper: resolve image from a reference node
+    const resolveRefImage = async (refNode: WorkflowNode, refEdge: WorkflowEdge): Promise<{ imageDataUrl?: string; refPrompt?: string }> => {
+      let imageDataUrl: string | undefined
+      let refPrompt: string | undefined
+
+      if (refNode.type === 'imageImport') {
+        const imgData = refNode.data as ImageImportNodeData
+        imageDataUrl = imgData.imageDataUrl
+        refPrompt = getIncomingTextPrompt(refNode.id, edges, get().nodes) ?? imgData.referencePrompt
+      } else if (refNode.type === 'nanoImage') {
+        const imgData = refNode.data as NanoImageNodeData
+        imageDataUrl = imgData.outputImageDataUrl
+      } else if (refNode.type === 'gridComposer') {
+        const imgData = refNode.data as any
+        imageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+      } else if (refNode.type === 'cellRegenerator') {
+        const imgData = refNode.data as any
+        let cellId = refEdge.sourceHandle
+
+        console.log(`🔍 Nano Image: Cell Regenerator connection found`, {
+          sourceHandle: cellId,
+          targetHandle: refEdge.targetHandle,
+          availableCells: Object.keys(imgData.regeneratedImages || {}),
+        })
+
+        // Self-healing: If handle is "output" or missing, use first available cell
+        if ((!cellId || cellId === 'output' || !imgData.regeneratedImages?.[cellId]) &&
+            imgData.regeneratedImages && Object.keys(imgData.regeneratedImages).length > 0) {
+          const firstCell = Object.keys(imgData.regeneratedImages)[0]
+          console.warn(`⚠️ Nano Image: Invalid cellId "${cellId}", falling back to "${firstCell}"`)
+          cellId = firstCell
+        }
+
+        if (cellId && imgData.regeneratedImages?.[cellId]) {
+          imageDataUrl = imgData.regeneratedImages[cellId]
+          referenceSlotId = referenceSlotId || cellId
+          referenceSlotLabel = referenceSlotLabel ||
+            imgData.slots?.find((slot: any) => slot.id === cellId)?.label
+          referenceCellRegeneratorId = referenceCellRegeneratorId || refNode.id
+          console.log(`✅ Nano Image: Using cell image for ${cellId}`)
+        } else {
+          console.error(`❌ Nano Image: No cell image found for "${cellId}"`)
+        }
+      }
+
+      return { imageDataUrl, refPrompt }
+    }
+
+    // Helper: push resolved image to referenceImages
+    const pushRefImage = async (imageDataUrl: string | undefined, refPrompt: string | undefined, label: string) => {
+      if (!imageDataUrl) return
+      if (imageDataUrl.startsWith('idb:') || imageDataUrl.startsWith('s3:')) {
+        try {
+          const actualDataUrl = await getImage(imageDataUrl)
+          if (actualDataUrl) {
+            referenceImages.push(actualDataUrl)
+            console.log(`✅ Nano Image: Loaded ${label} reference (${actualDataUrl.length} chars)`)
+          } else {
+            console.warn(`⚠️ Failed to load reference image: ${imageDataUrl}`)
+          }
+        } catch (error) {
+          console.error(`❌ Error loading reference image: ${imageDataUrl}`, error)
+        }
+      } else {
+        referenceImages.push(imageDataUrl)
+        console.log(`✅ Nano Image: Direct ${label} reference (${imageDataUrl.length} chars)`)
+      }
+      if (refPrompt) {
+        referencePrompts.push(refPrompt)
+      }
+    }
+
+    // Strategy 1: Check ref-N handles (standard path)
     for (let i = 1; i <= maxRefs; i++) {
       const refEdge = edges.find((e) => e.target === id && e.targetHandle === `ref-${i}`)
       if (refEdge) {
         const refNode = get().nodes.find((n) => n.id === refEdge.source)
         if (refNode) {
-          let imageDataUrl: string | undefined
-          let refPrompt: string | undefined
-          
-          if (refNode.type === 'imageImport') {
-            const imgData = refNode.data as ImageImportNodeData
-            imageDataUrl = imgData.imageDataUrl
-            refPrompt = getIncomingTextPrompt(refNode.id, edges, get().nodes) ?? imgData.referencePrompt
-          } else if (refNode.type === 'nanoImage') {
-            const imgData = refNode.data as NanoImageNodeData
-            imageDataUrl = imgData.outputImageDataUrl
-          } else if (refNode.type === 'gridComposer') {
-            const imgData = refNode.data as any
-            imageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
-          } else if (refNode.type === 'cellRegenerator') {
-            const imgData = refNode.data as any
-            // For cell regenerator, try to get image from sourceHandle (e.g., S1, S2, etc.)
-            let cellId = refEdge.sourceHandle
-            
-            console.log(`🔍 Nano Image: Checking Cell Regenerator connection`, {
-              sourceHandle: cellId,
-              availableCells: Object.keys(imgData.regeneratedImages || {})
-            })
-
-    // 🩹 Self-healing: If handle is "output" or missing but we have cells, use S1
-    if ((!cellId || cellId === 'output' || !imgData.regeneratedImages?.[cellId]) && 
-        imgData.regeneratedImages && Object.keys(imgData.regeneratedImages).length > 0) {
-      const firstCell = Object.keys(imgData.regeneratedImages)[0]
-      console.warn(`⚠️ Nano Image: Invalid cellId "${cellId}", falling back to "${firstCell}"`)
-      cellId = firstCell
-    }
-
-    if (cellId && imgData.regeneratedImages?.[cellId]) {
-      const imageData = imgData.regeneratedImages[cellId]
-      // 🛡️ CRITICAL: NEVER use raw data URLs if it's too large, must be idb: reference
-      if (imageData.startsWith('data:') && imageData.length > 100000) {
-        console.error('❌ Nano Image: Data URL is too large for state! Use saveImage first.')
-        // In this case, we'll try to use it but warn
-      }
-      imageDataUrl = imageData
-      referenceSlotId = referenceSlotId || cellId
-      referenceSlotLabel =
-        referenceSlotLabel ||
-        imgData.slots?.find((slot: any) => slot.id === cellId)?.label
-      referenceCellRegeneratorId = referenceCellRegeneratorId || refNode.id
-      console.log(`✅ Nano Image: Found cell image for ${cellId}`)
-    } else {
-      console.error(`❌ Nano Image: Could not find image for cell ${cellId}. Stop fallback to prevent full grid output.`)
-      // Stop here - do NOT fall back to other images if this specific handle was requested
-      throw new Error(`연결된 셀(${cellId}) 이미지를 찾을 수 없습니다. Cell Regenerator를 다시 실행해주세요.`)
-    }
-  }
-          
-          if (imageDataUrl) {
-            // 🔥 Convert idb: or s3: reference to actual DataURL
-            if (imageDataUrl.startsWith('idb:') || imageDataUrl.startsWith('s3:')) {
-              try {
-                const actualDataUrl = await getImage(imageDataUrl)
-                if (actualDataUrl) {
-                  referenceImages.push(actualDataUrl)
-                } else {
-                  console.warn(`⚠️ Failed to load reference image: ${imageDataUrl}`)
-                }
-              } catch (error) {
-                console.error(`❌ Error loading reference image: ${imageDataUrl}`, error)
-              }
-            } else {
-              referenceImages.push(imageDataUrl)
-            }
-            
-            if (refPrompt) {
-              referencePrompts.push(`Reference ${i}: ${refPrompt}`)
-            }
-          }
+          const { imageDataUrl, refPrompt } = await resolveRefImage(refNode, refEdge)
+          await pushRefImage(imageDataUrl, refPrompt ? `Reference ${i}: ${refPrompt}` : undefined, `ref-${i}`)
         }
       }
     }
 
-    // 🧭 If reference comes from Cell Regenerator, prefer slot-specific prompt
-    const normalizedPrompt = (prompt || '').trim()
-    const isSlotOnlyPrompt = /^s\d+$/i.test(normalizedPrompt)
-    // Even more aggressive grid detection
-    const looksLikeGridPrompt =
-      /sequence\s+grid|grid\s*\(|rows?,\s*columns?|story\s*board|storyboard|multi-panel|multi\s+panel|contact\s+sheet/i.test(normalizedPrompt)
+    // Strategy 2: If no ref-N matches found, check ALL edges for Cell Regenerator connections
+    if (referenceImages.length === 0) {
+      console.log(`⚠️ Nano Image: No ref-N handle matches. Checking ALL edges for Cell Regenerator...`)
+      for (const edge of allEdgesToThisNode) {
+        const sourceNode = get().nodes.find((n) => n.id === edge.source)
+        if (sourceNode && ['imageImport', 'nanoImage', 'gridComposer', 'cellRegenerator'].includes(sourceNode.type!)) {
+          // Skip prompt-handle connections
+          if (edge.targetHandle === 'prompt') continue
+          console.log(`🔄 Nano Image: Found image source via fallback: ${sourceNode.type} (sourceHandle=${edge.sourceHandle}, targetHandle=${edge.targetHandle})`)
+          const { imageDataUrl, refPrompt } = await resolveRefImage(sourceNode, edge)
+          await pushRefImage(imageDataUrl, refPrompt, `fallback-${sourceNode.type}`)
+          if (referenceImages.length > 0) break // Use first valid reference
+        }
+      }
+    }
 
-    if (referenceSlotId) {
-      let inferredPrompt = ''
-      console.error('🚀🧭 Nano Image: Slot detected! Checking for inference...', {
-        referenceSlotId,
-        normalizedPrompt,
-        isSlotOnlyPrompt,
-        looksLikeGridPrompt
-      })
+    console.log(`📊 Nano Image: Final reference count = ${referenceImages.length}`)
 
-      if (referenceCellRegeneratorId) {
+    // 🧭 If reference comes from Cell Regenerator, COMPLETELY REPLACE the prompt
+    // The Grid Node's prompt contains FULL GRID instructions (9 cells, 3x3 layout etc.)
+    // which causes Gemini to generate a grid instead of a single image.
+    const hasCellRegeneratorRef = !!referenceCellRegeneratorId && referenceImages.length > 0
+
+    if (hasCellRegeneratorRef) {
+      // Get ONLY the scene description from Grid Node's slot data (not the grid prompt)
+      let sceneDescription = ''
+      if (referenceCellRegeneratorId && referenceSlotId) {
         const gridEdge = edges.find(
           (e) => e.target === referenceCellRegeneratorId && e.targetHandle === 'grid-layout',
         )
@@ -914,31 +946,33 @@ export const useFlowStore = create<FlowState>()(
           gridEdge && get().nodes.find((n) => n.id === gridEdge.source && n.type === 'gridNode')
         if (gridNode?.type === 'gridNode') {
           const gridData = gridNode.data as GridNodeData
-          inferredPrompt = gridData.generatedPrompts?.[referenceSlotId] || ''
-          console.error('🚀🧭 Nano Image: Found grid node prompt:', inferredPrompt.substring(0, 50) + '...')
+          const slotData = gridData.slots?.find((s) => s.id === referenceSlotId)
+          if (slotData) {
+            sceneDescription = `Scene: ${slotData.label}. ${slotData.metadata || ''}`
+          }
         }
       }
 
-      const shouldOverridePrompt =
-        !normalizedPrompt || 
-        normalizedPrompt.length < 5 || 
-        isSlotOnlyPrompt || 
-        looksLikeGridPrompt
+      const labelText = referenceSlotLabel ? ` — ${referenceSlotLabel}` : ''
+      const slotText = referenceSlotId || 'cell'
 
-      if (shouldOverridePrompt) {
-        if (!inferredPrompt) {
-          const labelText = referenceSlotLabel ? ` (${referenceSlotLabel})` : ''
-          inferredPrompt =
-            `EXACTLY RECREATE this reference image. Remove text labels only.` +
-            ` Maintain composition, lighting, and cinematic style.` +
-            ` Subject: ${referenceSlotId}${labelText}.`
-        }
+      // COMPLETELY REPLACE the prompt — NO grid instructions
+      prompt = `Generate exactly ONE standalone cinematic image. This is NOT a grid, NOT a collage, NOT multi-panel. Output a SINGLE scene only.
 
-        prompt = inferredPrompt
-        console.error('✅🚀 Nano Image: Prompt inferred successfully! NEW PROMPT:', prompt)
-      } else {
-        console.error('ℹ️🚀 Nano Image: Using original user prompt')
-      }
+${sceneDescription ? `${sceneDescription}\n\n` : ''}Use the reference image as visual guide for this ONE scene (${slotText}${labelText}).
+Recreate the scene with high quality, photorealistic rendering.
+Remove any text labels, borders, or grid artifacts from the reference.`
+
+      console.log('🎯 Nano Image v4: GRID PROMPT REPLACED with single-image prompt', {
+        referenceSlotId,
+        sceneDescription: sceneDescription.substring(0, 80),
+        newPromptLength: prompt.length,
+        oldPromptHadGrid: /grid|3x3|9 cells/i.test(prompt),
+      })
+    } else if (referenceSlotId) {
+      // Legacy path for slot references without Cell Regenerator
+      const labelText = referenceSlotLabel ? ` (${referenceSlotLabel})` : ''
+      prompt = `Generate a SINGLE image. ${prompt}\nSubject: ${referenceSlotId}${labelText}.`
     }
     
     // Fallback: Check for old-style connection (no handle specified)
@@ -1012,6 +1046,14 @@ export const useFlowStore = create<FlowState>()(
       }))
       return
     }
+
+    // Debug: version tag to confirm HMR is working
+    console.log('🔥🔥🔥 Nano Image v3: Code is running! 🔥🔥🔥', {
+      referenceCount: referenceImages.length,
+      referenceSlotId,
+      prompt: prompt.substring(0, 80),
+      referenceSizes: referenceImages.map(r => r.length),
+    })
 
     updateNode((prev) => ({
       ...prev,
@@ -1820,12 +1862,26 @@ ${enhancedPrompt}`
         throw new Error(`잘못된 Grid Layout: ${data.gridLayout}`)
       }
 
-      console.log(`🔪 Cell Regenerator: Splitting ${rows}x${cols} grid into ${data.slots.length} cells`)
+      // Determine which slots to extract based on outgoing connections
+      const connectedSlotIds = edges
+        .filter((e) => e.source === id && e.sourceHandle && e.sourceHandle !== 'output')
+        .map((e) => e.sourceHandle!)
+      const uniqueConnectedSlots = [...new Set(connectedSlotIds)]
+
+      // Also include manually selected slots
+      const selectedSlots: string[] = data.selectedSlots || []
+      const allTargetSlots = [...new Set([...uniqueConnectedSlots, ...selectedSlots])]
+
+      const slotsToExtract = allTargetSlots.length > 0
+        ? data.slots.filter((slot: any) => allTargetSlots.includes(slot.id))
+        : data.slots
+
+      console.log(`🔪 Cell Regenerator: Splitting ${rows}x${cols} grid, extracting ${slotsToExtract.length}/${data.slots.length} cells (connected: ${uniqueConnectedSlots.join(',')}, selected: ${selectedSlots.join(',')})`)
 
       // 4. Load image
       const img = new Image()
       img.crossOrigin = 'anonymous'
-      
+
       await new Promise<void>((resolve, reject) => {
         img.onload = () => resolve()
         img.onerror = () => reject(new Error('이미지 로드 실패'))
@@ -1847,10 +1903,17 @@ ${enhancedPrompt}`
         throw new Error('Canvas 생성 실패')
       }
 
-      const regeneratedImages: { [key: string]: string } = {}
+      // 연결된 슬롯이 있으면 해당 슬롯만 결과에 포함, 없으면 전체 보존
+      const regeneratedImages: { [key: string]: string } = allTargetSlots.length > 0
+        ? {}  // 연결 기반 추출: 깨끗한 상태에서 시작
+        : { ...data.regeneratedImages }  // 전체 추출: 기존 결과 보존
 
       for (let i = 0; i < data.slots.length; i++) {
         const slot = data.slots[i]
+
+        // Skip slots not in the extraction list
+        if (!slotsToExtract.some((s: any) => s.id === slot.id)) continue
+
         const row = Math.floor(i / cols)
         const col = i % cols
 
@@ -1896,24 +1959,44 @@ ${enhancedPrompt}`
         console.log(`✅ Cell ${slot.id} saved: ${storageRef}`)
       }
 
-      // 7. Update node data
+      // 7. Update node data + invalidate downstream Nano Banana outputs
+      const downstreamNanoEdges = edges.filter(
+        (e) => e.source === id && get().nodes.find((n) => n.id === e.target)?.type === 'nanoImage'
+      )
+      const downstreamNanoIds = new Set(downstreamNanoEdges.map((e) => e.target))
+
       set({
-        nodes: nodes.map((node) =>
-          node.id === id
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  regeneratedImages,
-                  status: 'success',
-                  error: undefined,
-                },
-              }
-            : node,
-        ),
+        nodes: get().nodes.map((node) => {
+          if (node.id === id) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                regeneratedImages,
+                status: 'completed',
+                error: undefined,
+              },
+            }
+          }
+          // 하위 Nano Banana 노드의 이전 출력을 초기화 (재생성 유도)
+          if (downstreamNanoIds.has(node.id)) {
+            console.log(`🔄 Auto-invalidating downstream Nano Banana: ${node.id}`)
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                outputImageUrl: undefined,
+                outputImageDataUrl: undefined,
+                status: 'idle',
+                error: '⚠️ 상위 Cell Regenerator가 변경되었습니다. Generate를 눌러 재생성하세요.',
+              },
+            }
+          }
+          return node
+        }),
       })
 
-      console.log(`✅ Cell Regenerator: Successfully separated ${data.slots.length} cells`)
+      console.log(`✅ Cell Regenerator: Successfully separated ${slotsToExtract.length} cells, invalidated ${downstreamNanoIds.size} downstream nodes`)
     } catch (error) {
       console.error('❌ Cell Regenerator error:', error)
       set({
@@ -2337,6 +2420,245 @@ ${enhancedPrompt}`
       }))
     } catch (error) {
       console.error('❌ Kling Video 생성 실패:', error)
+      if (!abortController.signal.aborted) {
+        updateNode((prev) => ({
+          ...prev,
+          status: 'error',
+          error: formatErrorMessage(error),
+        }))
+      }
+    } finally {
+      clearInterval(progressTimer)
+      const controllers = get().abortControllers
+      controllers.delete(id)
+      set({ abortControllers: new Map(controllers) })
+    }
+  },
+  runSoraNode: async (id) => {
+    const { nodes, edges, abortControllers } = get()
+    const current = nodes.find((node) => node.id === id)
+    if (!current || current.type !== 'soraVideo') return
+
+    const currentData = current.data as SoraVideoNodeData
+    if (currentData.status === 'processing') {
+      console.warn('⚠️ Sora node is already processing')
+      return
+    }
+
+    // Rate limiting
+    const now = Date.now()
+    const lastExecution = (currentData as any).lastExecutionTime || 0
+    const minInterval = 5000
+
+    if (now - lastExecution < minInterval) {
+      const waitTime = Math.ceil((minInterval - (now - lastExecution)) / 1000)
+      set({
+        nodes: nodes.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'error',
+                  error: `너무 빠르게 실행했습니다. ${waitTime}초 후 다시 시도해주세요.`,
+                },
+              }
+            : node,
+        ),
+      })
+      return
+    }
+
+    // Create abort controller
+    const abortController = new AbortController()
+    abortControllers.set(id, abortController)
+    set({ abortControllers: new Map(abortControllers) })
+
+    const updateNode = (updater: (data: NodeData) => NodeData) => {
+      set({
+        nodes: get().nodes.map((node) =>
+          node.id === id ? { ...node, data: updater(node.data) } : node,
+        ),
+      })
+    }
+
+    const imageNodeTypes = new Set(['imageImport', 'nanoImage', 'gridComposer', 'cellRegenerator'])
+
+    // Image 노드 (image 핸들)
+    const imageEdges = edges.filter(
+      (e) => e.target === id && (!e.targetHandle || e.targetHandle === 'image')
+    )
+    const imageEdge = imageEdges.find((e) => {
+      const node = nodes.find((n) => n.id === e.source)
+      return imageNodeTypes.has(node?.type ?? '')
+    })
+    const imageNodeData = imageEdge ? nodes.find((n) => n.id === imageEdge.source) : undefined
+
+    // Prompt 노드
+    const incoming = getIncomingNodes(id, edges, get().nodes)
+    const promptNode = incoming.find(
+      (node) => node.type === 'motionPrompt' || node.type === 'textPrompt' || node.type === 'llmPrompt',
+    )
+
+    // Image 데이터
+    let inputImageUrl: string | undefined
+    let inputImageDataUrl: string | undefined
+
+    if (imageNodeData?.type === 'imageImport') {
+      const imgData = imageNodeData.data as ImageImportNodeData
+      inputImageUrl = imgData.imageUrl
+      inputImageDataUrl = imgData.imageDataUrl
+    } else if (imageNodeData?.type === 'nanoImage') {
+      const imgData = imageNodeData.data as NanoImageNodeData
+      inputImageUrl = imgData.outputImageUrl
+      inputImageDataUrl = imgData.outputImageDataUrl
+    } else if (imageNodeData?.type === 'gridComposer') {
+      const imgData = imageNodeData.data as any
+      inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
+      inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+    } else if (imageNodeData?.type === 'cellRegenerator') {
+      const imgData = imageNodeData.data as any
+      const cellId = imageEdge?.sourceHandle
+      if (cellId && imgData.regeneratedImages?.[cellId]) {
+        inputImageDataUrl = imgData.regeneratedImages[cellId]
+        inputImageUrl = inputImageDataUrl
+      } else {
+        const firstCellId = Object.keys(imgData.regeneratedImages || {})[0]
+        if (firstCellId) {
+          inputImageDataUrl = imgData.regeneratedImages[firstCellId]
+          inputImageUrl = inputImageDataUrl
+        }
+      }
+    }
+
+    if (!inputImageDataUrl && inputImageUrl) {
+      if (
+        inputImageUrl.startsWith('data:') ||
+        inputImageUrl.startsWith('idb:') ||
+        inputImageUrl.startsWith('s3:')
+      ) {
+        inputImageDataUrl = inputImageUrl
+      }
+    }
+
+    const inputPrompt =
+      promptNode?.type === 'motionPrompt'
+        ? (promptNode.data as MotionPromptNodeData).combinedPrompt
+        : promptNode?.type === 'textPrompt'
+          ? (promptNode.data as TextPromptNodeData).prompt
+          : promptNode?.type === 'llmPrompt'
+            ? (promptNode.data as any).outputPrompt || ''
+            : ''
+
+    // Sora는 prompt 필수
+    if (!inputPrompt) {
+      updateNode((prev) => ({
+        ...prev,
+        status: 'error',
+        error: '프롬프트 노드를 연결해 주세요.',
+      }))
+      return
+    }
+
+    updateNode((prev) => ({
+      ...prev,
+      status: 'processing',
+      error: undefined,
+      inputImageUrl,
+      inputImageDataUrl,
+      inputPrompt,
+      progress: 10,
+      lastExecutionTime: now,
+    }))
+
+    // Convert storage references to actual DataURLs
+    let actualImageDataUrl = inputImageDataUrl
+
+    if (inputImageDataUrl && (inputImageDataUrl.startsWith('idb:') || inputImageDataUrl.startsWith('s3:'))) {
+      try {
+        const { getImage } = await import('../utils/indexedDB')
+        const dataURL = await getImage(inputImageDataUrl)
+        if (dataURL) {
+          actualImageDataUrl = dataURL
+        } else {
+          if (inputImageUrl && inputImageUrl.startsWith('data:')) {
+            actualImageDataUrl = inputImageUrl
+          } else {
+            actualImageDataUrl = undefined
+          }
+        }
+      } catch (error) {
+        console.error('❌ Sora: Error loading image:', error)
+        actualImageDataUrl = undefined
+      }
+    }
+
+    const openaiApiKey = get().openaiApiKey || import.meta.env.VITE_OPENAI_API_KEY || ''
+    const client = openaiApiKey ? new SoraAPIClient(openaiApiKey) : new MockSoraAPI()
+
+    console.log('🎬 Sora Video 생성 시작:', {
+      useMock: !openaiApiKey,
+      prompt: inputPrompt.substring(0, 50) + '...',
+      model: (current.data as SoraVideoNodeData).model,
+      hasImage: !!actualImageDataUrl,
+    })
+
+    const progressTimer = setInterval(() => {
+      updateNode((prev) => {
+        const data = prev as SoraVideoNodeData
+        if (data.status !== 'processing') return prev
+        return {
+          ...prev,
+          progress: Math.min(data.progress + 5, 90),
+        }
+      })
+    }, 1500)
+
+    try {
+      if (abortController.signal.aborted) {
+        throw new Error('작업이 취소되었습니다.')
+      }
+
+      const settings = current.data as SoraVideoNodeData
+
+      const outputVideoUrl = await retryWithBackoff(
+        () => client.generateVideo(
+          inputPrompt,
+          actualImageDataUrl,
+          {
+            duration: settings.duration,
+            resolution: settings.resolution,
+            model: settings.model,
+          },
+        ),
+        {
+          maxAttempts: 2,
+          initialDelay: 2000,
+          onRetry: (attempt) => {
+            console.warn(`🔄 Sora Video retry ${attempt}/2`)
+            updateNode((prev) => ({
+              ...prev,
+              error: `재시도 중... (${attempt}/2)`,
+            }))
+          },
+        }
+      )
+
+      if (abortController.signal.aborted) {
+        throw new Error('작업이 취소되었습니다.')
+      }
+
+      console.log('✅ Sora Video 생성 완료:', outputVideoUrl)
+
+      updateNode((prev) => ({
+        ...prev,
+        status: 'completed',
+        outputVideoUrl,
+        progress: 100,
+        error: undefined,
+      }))
+    } catch (error) {
+      console.error('❌ Sora Video 생성 실패:', error)
       if (!abortController.signal.aborted) {
         updateNode((prev) => ({
           ...prev,

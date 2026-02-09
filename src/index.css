@@ -59,6 +59,13 @@ body {
   filter: drop-shadow(0 0 8px rgba(74, 222, 128, 0.5));
 }
 
+/* Sora Video - orange-500 */
+.react-flow__edge.edge-sora-video .react-flow__edge-path {
+  stroke: rgb(249, 115, 22);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.5));
+}
+
 /* Default */
 .react-flow__edge.edge-default .react-flow__edge-path {
   stroke: rgba(148, 163, 184, 0.7);

@@ -34,7 +34,7 @@ export class KlingAPIClient {
       'kling-v2-5': 'kling-v2-5',
       'kling-v2-6': 'kling-v2-6',
     }
-    return modelMap[model] || 'kling-v1-6' // 기본값: v1.6
+    return modelMap[model] || 'kling-v1-6'
   }
 
   async generateVideo(

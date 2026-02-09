@@ -7,6 +7,7 @@ export type NodeType =
   | 'motionPrompt'
   | 'geminiVideo'
   | 'klingVideo'
+  | 'soraVideo'
   | 'gridNode'
   | 'cellRegenerator'
   | 'gridComposer'
@@ -130,6 +131,24 @@ export type KlingVideoNodeData = {
   error?: string
 }
 
+// Sora Video Types
+export type SoraVideoModel = 'sora-2' | 'sora-2-pro'
+export type SoraVideoResolution = '720x1280' | '1280x720' | '1024x1792' | '1792x1024'
+
+export type SoraVideoNodeData = {
+  status: NodeStatus
+  inputImageUrl?: string
+  inputImageDataUrl?: string
+  inputPrompt?: string
+  model: SoraVideoModel
+  duration: 4 | 8 | 12
+  resolution: SoraVideoResolution
+  outputVideoUrl?: string
+  videoId?: string
+  progress: number
+  error?: string
+}
+
 // Grid Node Types
 export type GridLayout = '1x2' | '1x3' | '1x4' | '1x6' | '2x2' | '2x3' | '3x2' | '3x3'
 export type GridMode = 'character' | 'storyboard'
@@ -195,6 +214,8 @@ export type CellRegeneratorNodeData = {
   model: NanoImageModel
   resolution: NanoImageResolution
   aspectRatio: '1:1' | '16:9' | '9:16' | '4:3' | '3:4'
+  // Selected slots for extraction (empty = all)
+  selectedSlots: string[]  // slotId[] - 빈 배열이면 전체 추출
   // Regenerated images (one per slot, without labels)
   regeneratedImages: { [slotId: string]: string }  // slotId -> image URL
   error?: string
@@ -247,6 +268,7 @@ export type NodeData =
   | MotionPromptNodeData
   | GeminiVideoNodeData
   | KlingVideoNodeData
+  | SoraVideoNodeData
   | GridNodeData
   | CellRegeneratorNodeData
   | GridComposerNodeData
@@ -303,12 +325,20 @@ export const createNodeData = (type: NodeType): NodeData => {
     case 'klingVideo':
       return {
         status: 'idle',
-        model: 'kling-v1-6',  // 최신 안정 버전
+        model: 'kling-v1-6',
         duration: 5,
         aspectRatio: '16:9',
         enableMotionControl: false,
         cameraControl: 'none',
         motionValue: 0,
+        progress: 0,
+      }
+    case 'soraVideo':
+      return {
+        status: 'idle',
+        model: 'sora-2',
+        duration: 8,
+        resolution: '1280x720',
         progress: 0,
       }
     case 'gridNode':
@@ -333,6 +363,7 @@ export const createNodeData = (type: NodeType): NodeData => {
         model: 'gemini-3-pro-image-preview',
         resolution: '2K',
         aspectRatio: '1:1',
+        selectedSlots: [],
         regeneratedImages: {},
       }
     case 'gridComposer':

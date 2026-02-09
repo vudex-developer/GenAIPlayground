@@ -710,7 +710,7 @@ function App() {
                 🟢 OpenAI API Key
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                LLM Prompt Helper에서 GPT-4o, GPT-4o-mini 등 OpenAI 모델 사용시 필요합니다.
+                LLM Prompt Helper (GPT-4o 등) 및 Sora Video 노드에서 사용합니다.
                 <br />
                 <a 
                   href="https://platform.openai.com/api-keys" 

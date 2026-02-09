@@ -26,6 +26,7 @@ import TextPromptNode from './nodes/TextPromptNode'
 import MotionPromptNode from './nodes/MotionPromptNode'
 import GeminiVideoNode from './nodes/GeminiVideoNode'
 import KlingVideoNode from './nodes/KlingVideoNode'
+import SoraVideoNode from './nodes/SoraVideoNode'
 import GridNode from './nodes/GridNode'
 import CellRegeneratorNode from './nodes/CellRegeneratorNode'
 import GridComposerNode from './nodes/GridComposerNode'
@@ -33,6 +34,7 @@ import LLMPromptNode from './nodes/LLMPromptNode'
 import NodeInspector from './NodeInspector'
 import { ImageModal } from './ImageModal'
 import KlingIcon from './icons/KlingIcon'
+import SoraIcon from './icons/SoraIcon'
 
 // Custom LLM text icon component
 const LLMIcon = ({ className }: { className?: string }) => (
@@ -48,6 +50,7 @@ const nodeTypes = {
   motionPrompt: MotionPromptNode,
   geminiVideo: GeminiVideoNode,
   klingVideo: KlingVideoNode,
+  soraVideo: SoraVideoNode,
   gridNode: GridNode,
   cellRegenerator: CellRegeneratorNode,
   gridComposer: GridComposerNode,
@@ -71,6 +74,7 @@ const toolbarItems: Array<{
   { type: 'motionPrompt', label: 'Motion Prompt', key: '4', icon: Camera },
   { type: 'geminiVideo', label: 'Gemini Video', key: '5', icon: Sparkles },
   { type: 'klingVideo', label: 'Kling Video', key: '6', icon: KlingIcon },
+  { type: 'soraVideo', label: 'Sora Video', key: 'q', icon: SoraIcon },
   { type: 'gridNode', label: 'Grid Node', key: '7', icon: Grid3x3 },
   { type: 'cellRegenerator', label: 'Cell Regenerator', key: '8', icon: Sparkles },
   { type: 'gridComposer', label: 'Grid Composer', key: '9', icon: Layers },
@@ -105,6 +109,8 @@ export default function Canvas() {
         return '#60a5fa' // blue-400
       case 'klingVideo':
         return '#4ade80' // green-400
+      case 'soraVideo':
+        return '#f97316' // orange-500
       case 'gridNode':
         return '#a78bfa' // violet-400
       case 'cellRegenerator':
