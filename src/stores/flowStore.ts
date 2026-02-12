@@ -1027,6 +1027,67 @@ Remove any text labels, borders, or grid artifacts from the reference.`
       }
     }
 
+    // 🎭 캐릭터 참조 이미지 수집 (character 핸들)
+    const characterImages: string[] = []
+    const characterEdges = edges.filter((e) => e.target === id && e.targetHandle === 'character')
+    
+    for (const charEdge of characterEdges) {
+      const charNode = get().nodes.find((n) => n.id === charEdge.source)
+      if (!charNode) continue
+
+      let charImageDataUrl: string | undefined
+
+      if (charNode.type === 'imageImport') {
+        charImageDataUrl = (charNode.data as ImageImportNodeData).imageDataUrl
+      } else if (charNode.type === 'nanoImage') {
+        charImageDataUrl = (charNode.data as NanoImageNodeData).outputImageDataUrl
+      } else if (charNode.type === 'gridComposer') {
+        const imgData = charNode.data as any
+        charImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
+      } else if (charNode.type === 'cellRegenerator') {
+        const imgData = charNode.data as any
+        const cellId = charEdge.sourceHandle
+        if (cellId && imgData.regeneratedImages?.[cellId]) {
+          charImageDataUrl = imgData.regeneratedImages[cellId]
+        } else if (imgData.regeneratedImages) {
+          const firstKey = Object.keys(imgData.regeneratedImages)[0]
+          if (firstKey) charImageDataUrl = imgData.regeneratedImages[firstKey]
+        }
+      }
+
+      if (charImageDataUrl) {
+        if (charImageDataUrl.startsWith('idb:') || charImageDataUrl.startsWith('s3:')) {
+          try {
+            const actual = await getImage(charImageDataUrl)
+            if (actual) {
+              characterImages.push(actual)
+              console.log(`🎭 Character ref loaded from ${charNode.type} (${actual.length} chars)`)
+            }
+          } catch (error) {
+            console.error('❌ Character ref load failed:', error)
+          }
+        } else {
+          characterImages.push(charImageDataUrl)
+          console.log(`🎭 Character ref direct from ${charNode.type} (${charImageDataUrl.length} chars)`)
+        }
+      }
+    }
+
+    // 캐릭터 참조가 있으면 프롬프트에 일관성 지시 추가
+    if (characterImages.length > 0) {
+      const charCount = characterImages.length
+      const charInstruction = `\n\n🎭 CHARACTER CONSISTENCY INSTRUCTION:
+The attached character reference image${charCount > 1 ? 's show' : ' shows'} the character(s) that MUST appear in this scene.
+CRITICAL RULES for character consistency:
+- Maintain EXACTLY the same facial features, hair style, hair color, eye color, and skin tone as shown in the character reference.
+- Keep the same body proportions and build.
+- The character's clothing/outfit may change based on the scene context, but their physical appearance must remain identical.
+- If the character reference shows multiple views (front, side, back), use them to accurately recreate the character from any angle needed in this scene.
+- Do NOT alter the character's identity - they must be clearly recognizable as the same person across all images.`
+      prompt = prompt + charInstruction
+      console.log(`🎭 Character consistency applied: ${charCount} reference(s)`)
+    }
+
     if (!prompt.trim()) {
       updateNode((prev) => ({
         ...prev,
@@ -1047,9 +1108,9 @@ Remove any text labels, borders, or grid artifacts from the reference.`
       return
     }
 
-    // Debug: version tag to confirm HMR is working
-    console.log('🔥🔥🔥 Nano Image v3: Code is running! 🔥🔥🔥', {
+    console.log('🔥🔥🔥 Nano Image v5: Code is running! 🔥🔥🔥', {
       referenceCount: referenceImages.length,
+      characterCount: characterImages.length,
       referenceSlotId,
       prompt: prompt.substring(0, 80),
       referenceSizes: referenceImages.map(r => r.length),
@@ -1449,6 +1510,7 @@ ${enhancedPrompt}`
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
         referenceCount: referenceImages.length,
+        characterCount: characterImages.length,
         referenceMode: hasGridComposerRef ? referenceMode : 'N/A',
       })
       
@@ -1464,6 +1526,7 @@ ${enhancedPrompt}`
           model,
           data.resolution,
           abortController.signal,
+          characterImages.length > 0 ? characterImages : undefined,
         ),
         {
           maxAttempts: 3,

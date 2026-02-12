@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
-import { Image as ImageIcon, Upload } from 'lucide-react'
+import { Image as ImageIcon, Upload, RefreshCw } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
-import { getImage, saveImage } from '../../utils/indexedDB'
+import { getImage, saveImage, initDB, blobToDataURL } from '../../utils/indexedDB'
 import type { ImageImportNodeData } from '../../types/nodes'
 
 export default function ImageImportNode({
@@ -14,41 +14,90 @@ export default function ImageImportNode({
   const updateNodeData = useFlowStore((state) => state.updateNodeData)
   const openImageModal = useFlowStore((state) => state.openImageModal)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
-  const [displayImageUrl, setDisplayImageUrl] = useState<string | undefined>(
-    data.imageDataUrl || data.imageUrl
-  )
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | undefined>(undefined)
+  const [isLoading, setIsLoading] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
 
-  // 🔄 IndexedDB/S3에서 이미지 복원
-  useEffect(() => {
-    const loadImage = async () => {
-      // imageDataUrl이 idb: 또는 s3: 참조인 경우
+  // 🔄 IndexedDB/S3에서 이미지 로드 (공통 함수)
+  const loadImageFromStorage = useCallback(async () => {
+    setIsLoading(true)
+    setLoadFailed(false)
+
+    try {
+      // 1. idb:/s3: 참조로 직접 로드
       if (data.imageDataUrl && typeof data.imageDataUrl === 'string') {
         if (data.imageDataUrl.startsWith('idb:') || data.imageDataUrl.startsWith('s3:')) {
-          try {
-            console.log('🔄 Image Import: 이미지 로드 중...', data.imageDataUrl)
-            const dataURL = await getImage(data.imageDataUrl)
-            if (dataURL) {
-              console.log('✅ Image Import: 이미지 로드 성공')
-              setDisplayImageUrl(dataURL)
-            } else {
-              console.warn('⚠️ Image Import: 이미지 없음')
-              setDisplayImageUrl(undefined)
-            }
-          } catch (error) {
-            console.error('❌ Image Import: 이미지 복원 실패:', error)
-            setDisplayImageUrl(undefined)
+          console.log('🔄 Image Import: 이미지 로드 중...', data.imageDataUrl)
+          const dataURL = await getImage(data.imageDataUrl)
+          if (dataURL) {
+            console.log('✅ Image Import: 이미지 로드 성공')
+            setDisplayImageUrl(dataURL)
+            setLoadFailed(false)
+            setIsLoading(false)
+            return
           }
         } else if (data.imageDataUrl.startsWith('data:')) {
-          // 이미 DataURL인 경우
           setDisplayImageUrl(data.imageDataUrl)
+          setLoadFailed(false)
+          setIsLoading(false)
+          return
         }
-      } else if (data.imageUrl) {
-        setDisplayImageUrl(data.imageUrl)
       }
-    }
 
-    loadImage()
-  }, [data.imageDataUrl, data.imageUrl])
+      if (data.imageUrl) {
+        setDisplayImageUrl(data.imageUrl)
+        setLoadFailed(false)
+        setIsLoading(false)
+        return
+      }
+
+      // 2. 참조 없으면 nodeId로 IndexedDB 검색 (폴백)
+      try {
+        const db = await initDB()
+        const allMeta = await db.getAll('metadata')
+        const nodeMeta = allMeta
+          .filter((m: any) => m.nodeId === id && m.type === 'image')
+          .sort((a: any, b: any) => b.createdAt - a.createdAt)
+
+        if (nodeMeta.length > 0) {
+          const blob = await db.get('images', nodeMeta[0].id)
+          if (blob) {
+            const dataURL = await blobToDataURL(blob)
+            console.log('✅ Image Import: nodeId로 이미지 복구 성공:', nodeMeta[0].id)
+            setDisplayImageUrl(dataURL)
+            setLoadFailed(false)
+            updateNodeData(id, { imageDataUrl: `idb:${nodeMeta[0].id}` })
+            setIsLoading(false)
+            return
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ Image Import: nodeId 검색 실패:', error)
+      }
+
+      // 3. 모두 실패
+      setDisplayImageUrl(undefined)
+      setLoadFailed(true)
+    } catch (error) {
+      console.error('❌ Image Import: 이미지 복원 실패:', error)
+      setDisplayImageUrl(undefined)
+      setLoadFailed(true)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [data.imageDataUrl, data.imageUrl, id, updateNodeData])
+
+  // 마운트 시 + 데이터 변경 시 자동 로드
+  useEffect(() => {
+    loadImageFromStorage()
+  }, [loadImageFromStorage])
+
+  // 수동 리로드 핸들러
+  const handleReload = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    console.log('🔄 Image Import: 수동 리로드 요청')
+    await loadImageFromStorage()
+  }, [loadImageFromStorage])
 
   const handleFileUpload = async (file: File) => {
     if (!file.type.startsWith('image/')) return
@@ -124,8 +173,14 @@ export default function ImageImportNode({
           }}
           onClick={(e) => e.stopPropagation()}
         />
-        {displayImageUrl ? (
-          <div className="relative">
+        {isLoading ? (
+          // 로딩 상태
+          <div className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-cyan-400/30 bg-[#222d3d]">
+            <RefreshCw className="h-5 w-5 text-cyan-400 animate-spin" />
+            <div className="text-[10px] text-slate-400">이미지 로딩 중...</div>
+          </div>
+        ) : displayImageUrl ? (
+          <div className="relative group">
             <img
               src={displayImageUrl}
               alt="Imported"
@@ -139,27 +194,48 @@ export default function ImageImportNode({
                 openImageModal(displayImageUrl || '')
               }}
               onError={() => {
-                // 이미지 로드 실패 시 재로드 시도
-                console.warn('⚠️ Image Import: 이미지 로드 실패, IndexedDB/S3에서 재시도...')
-                if (data.imageDataUrl?.startsWith('idb:') || data.imageDataUrl?.startsWith('s3:')) {
-                  getImage(data.imageDataUrl).then((dataURL) => {
-                    if (dataURL) {
-                      console.log('✅ Image Import: 재시도 성공')
-                      setDisplayImageUrl(dataURL)
-                    } else {
-                      console.error('❌ Image Import: 재시도 실패')
-                      setDisplayImageUrl(undefined)
-                    }
-                  })
-                } else {
-                  setDisplayImageUrl(undefined)
-                }
+                console.warn('⚠️ Image Import: 이미지 렌더링 실패')
+                setDisplayImageUrl(undefined)
+                setLoadFailed(true)
               }}
-              title="더블클릭하여 크게 보기"
+              title="클릭: 이미지 교체 / 더블클릭: 크게 보기"
             />
+            {/* 리로드 버튼 (hover 시 표시) */}
+            <button
+              className="absolute top-1 right-1 p-1 rounded-md bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/80"
+              onClick={handleReload}
+              title="이미지 다시 로드"
+            >
+              <RefreshCw className="h-3 w-3" />
+            </button>
             {data.fileName && (
               <div className="mt-1 text-[9px] text-slate-500 truncate" title={data.fileName}>
-                📎 {data.fileName}
+                {data.fileName}
+              </div>
+            )}
+          </div>
+        ) : loadFailed || (data.fileName && !displayImageUrl) ? (
+          // 로드 실패 또는 이미지 없음 상태
+          <div className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-amber-400/40 bg-[#222d3d]">
+            <button
+              className="flex flex-col items-center gap-2 text-[10px] text-slate-400 hover:text-amber-300 transition"
+              onClick={handleReload}
+            >
+              <RefreshCw className="h-5 w-5 text-amber-400/70" />
+              <div className="font-medium text-amber-400">다시 로드</div>
+            </button>
+            <div 
+              className="text-[9px] text-slate-500 cursor-pointer hover:text-cyan-400 transition"
+              onClick={(e) => {
+                e.stopPropagation()
+                fileInputRef.current?.click()
+              }}
+            >
+              또는 파일 다시 선택
+            </div>
+            {data.fileName && (
+              <div className="text-[8px] text-slate-600 px-2 text-center truncate w-full">
+                {data.fileName}
               </div>
             )}
           </div>

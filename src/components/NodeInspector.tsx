@@ -840,6 +840,79 @@ const MotionPromptSettings = ({ node, updateNodeData }: any) => {
 const ImageImportSettings = ({ node, updateNodeData }: any) => {
   const data = node.data as ImageImportNodeData
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const [displayUrl, setDisplayUrl] = React.useState<string | undefined>(undefined)
+  const [isLoading, setIsLoading] = React.useState(false)
+  const [loadFailed, setLoadFailed] = React.useState(false)
+
+  // idb:/s3: 참조를 실제 DataURL로 변환하여 표시
+  const loadImageForDisplay = React.useCallback(async () => {
+    const ref = data.imageDataUrl || data.imageUrl
+    if (!ref) {
+      // 참조가 없지만 nodeId로 IndexedDB 검색 시도
+      setIsLoading(true)
+      setLoadFailed(false)
+      try {
+        const { initDB, blobToDataURL } = await import('../utils/indexedDB')
+        const db = await initDB()
+        const allMeta = await db.getAll('metadata')
+        const nodeMeta = allMeta
+          .filter((m: any) => m.nodeId === node.id && m.type === 'image')
+          .sort((a: any, b: any) => b.createdAt - a.createdAt)
+
+        if (nodeMeta.length > 0) {
+          const blob = await db.get('images', nodeMeta[0].id)
+          if (blob) {
+            const dataURL = await blobToDataURL(blob)
+            console.log('✅ Inspector: nodeId로 이미지 복구 성공:', nodeMeta[0].id)
+            setDisplayUrl(dataURL)
+            setLoadFailed(false)
+            // 참조 복원
+            updateNodeData(node.id, { imageDataUrl: `idb:${nodeMeta[0].id}` })
+            return
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ Inspector: nodeId 검색 실패:', error)
+      } finally {
+        setIsLoading(false)
+      }
+      setDisplayUrl(undefined)
+      setLoadFailed(true)
+      return
+    }
+
+    if (typeof ref === 'string' && (ref.startsWith('idb:') || ref.startsWith('s3:'))) {
+      setIsLoading(true)
+      setLoadFailed(false)
+      try {
+        const { getImage } = await import('../utils/indexedDB')
+        const dataURL = await getImage(ref)
+        if (dataURL) {
+          setDisplayUrl(dataURL)
+          setLoadFailed(false)
+        } else {
+          setDisplayUrl(undefined)
+          setLoadFailed(true)
+        }
+      } catch (error) {
+        console.error('❌ Inspector: 이미지 로드 실패:', error)
+        setDisplayUrl(undefined)
+        setLoadFailed(true)
+      } finally {
+        setIsLoading(false)
+      }
+    } else if (typeof ref === 'string' && ref.startsWith('data:')) {
+      setDisplayUrl(ref)
+      setLoadFailed(false)
+    } else {
+      setDisplayUrl(ref)
+      setLoadFailed(false)
+    }
+  }, [data.imageDataUrl, data.imageUrl, node.id, updateNodeData])
+
+  React.useEffect(() => {
+    loadImageForDisplay()
+  }, [loadImageForDisplay])
 
   const readAsDataUrl = (file: File) =>
     new Promise<string>((resolve, reject) => {
@@ -856,18 +929,38 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
     const url = URL.createObjectURL(file)
     const dataUrl = await readAsDataUrl(file)
     const img = new Image()
-    img.onload = () => {
-      updateNodeData(node.id, {
-        imageUrl: url,
-        imageDataUrl: dataUrl,
-        fileName: file.name,  // 파일 이름 저장
-        filePath: file.webkitRelativePath || file.name,  // 가능한 경로 정보 저장
-        width: img.width,
-        height: img.height,
-      })
+    img.onload = async () => {
+      try {
+        const { saveImage } = await import('../utils/indexedDB')
+        const imageId = `img-import-${Date.now()}-${Math.random().toString(36).substring(7)}`
+        const savedRef = await saveImage(imageId, dataUrl, node.id, true)
+        updateNodeData(node.id, {
+          imageUrl: url,
+          imageDataUrl: savedRef,
+          fileName: file.name,
+          filePath: file.webkitRelativePath || file.name,
+          width: img.width,
+          height: img.height,
+        })
+        setDisplayUrl(dataUrl)
+        setLoadFailed(false)
+      } catch (error) {
+        console.error('❌ Inspector: 이미지 저장 실패', error)
+        updateNodeData(node.id, {
+          imageUrl: url,
+          imageDataUrl: dataUrl,
+          fileName: file.name,
+          filePath: file.webkitRelativePath || file.name,
+          width: img.width,
+          height: img.height,
+        })
+        setDisplayUrl(dataUrl)
+      }
     }
     img.src = url
   }
+
+  const hasImageRef = !!(data.imageDataUrl || data.imageUrl)
 
   return (
     <div className="space-y-4">
@@ -884,24 +977,42 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
         }}
       />
 
-      {data.imageDataUrl || data.imageUrl ? (
+      {isLoading ? (
+        <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+          <div className="text-xs text-slate-400">이미지 로딩 중...</div>
+        </div>
+      ) : displayUrl ? (
         <>
           <div>
-            <div className="mb-2 text-sm font-medium text-slate-300">Preview</div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium text-slate-300">Preview</span>
+              <button
+                onClick={() => loadImageForDisplay()}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-white/10 hover:text-cyan-400"
+                title="이미지 다시 로드"
+              >
+                <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+                Reload
+              </button>
+            </div>
             <div className="max-h-[600px] overflow-auto rounded-lg border border-white/10">
               <img
-                src={data.imageDataUrl || data.imageUrl}
+                src={displayUrl}
                 alt="Imported"
                 className="w-full"
                 onError={() => {
-                  // 이미지 로드 실패 시
-                  updateNodeData(node.id, { imageUrl: undefined })
+                  setDisplayUrl(undefined)
+                  setLoadFailed(true)
                 }}
               />
             </div>
             {data.fileName && (
               <div className="mt-2 text-xs text-slate-400">
-                📎 {data.fileName}
+                {data.fileName}
               </div>
             )}
           </div>
@@ -909,31 +1020,76 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
           <div>
             <div className="mb-2 text-sm font-medium text-slate-300">Dimensions</div>
             <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
-              {data.width ?? '-'} × {data.height ?? '-'} px
+              {data.width ?? '-'} x {data.height ?? '-'} px
             </div>
           </div>
 
           <button
-            onClick={() => updateNodeData(node.id, { imageUrl: undefined, imageDataUrl: undefined, fileName: undefined, filePath: undefined, width: undefined, height: undefined })}
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-400 transition hover:bg-cyan-500/20"
+          >
+            Change Image
+          </button>
+
+          <button
+            onClick={() => {
+              updateNodeData(node.id, { imageUrl: undefined, imageDataUrl: undefined, fileName: undefined, filePath: undefined, width: undefined, height: undefined })
+              setDisplayUrl(undefined)
+            }}
             className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400 transition hover:bg-red-500/20"
           >
             Remove Image
           </button>
         </>
+      ) : (loadFailed || !displayUrl) && hasImageRef ? (
+        <>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-400">
+            이미지를 불러올 수 없습니다
+            {data.fileName && (
+              <div className="mt-1 text-xs text-amber-400/80">
+                파일: {data.fileName}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => loadImageForDisplay()}
+            className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-400 transition hover:bg-cyan-500/20"
+          >
+            다시 로드
+          </button>
+
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
+          >
+            파일 다시 선택
+          </button>
+        </>
       ) : data.fileName ? (
         <>
           <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-400">
-            ⚠️ 이미지가 자동 정리되었습니다
+            이미지가 자동 정리되었습니다
             <div className="mt-1 text-xs text-yellow-400/80">
               파일: {data.fileName}
             </div>
           </div>
+
+          <button
+            onClick={async () => {
+              // IndexedDB에서 nodeId로 복구 시도
+              await loadImageForDisplay()
+            }}
+            className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-400 transition hover:bg-cyan-500/20"
+          >
+            IndexedDB에서 복구 시도
+          </button>
           
           <button
             onClick={() => fileInputRef.current?.click()}
             className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
           >
-            다시 업로드
+            파일 다시 선택
           </button>
         </>
       ) : (

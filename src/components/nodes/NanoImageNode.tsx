@@ -114,7 +114,7 @@ export default function NanoImageNode({
       {/* Reference image input handles */}
       {Array.from({ length: data.maxReferences || 3 }).map((_, index) => {
         const refNum = index + 1
-        const handlePosition = 35 + (index * 25)  // Distribute evenly
+        const handlePosition = 30 + (index * 20)  // Distribute evenly
         
         return (
           <Handle
@@ -128,6 +128,16 @@ export default function NanoImageNode({
           />
         )
       })}
+
+      {/* Character reference handle */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="character"
+        style={{ top: '90%' }}
+        className="!h-3 !w-3 !bg-pink-400 !border-2 !border-pink-300"
+        title="Character Reference"
+      />
       
       <Handle
         type="source"

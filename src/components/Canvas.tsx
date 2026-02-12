@@ -3,10 +3,12 @@ import ReactFlow, {
   Background,
   ConnectionLineType,
   Controls,
+  ControlButton,
   MiniMap,
   useReactFlow,
   BezierEdge,
   type Node,
+  type Edge,
   type EdgeTypes,
 } from 'reactflow'
 import {
@@ -81,8 +83,161 @@ const toolbarItems: Array<{
   { type: 'llmPrompt', label: 'LLM Prompt', key: '0', icon: LLMIcon },
 ]
 
+// 노드 너비/높이 추정치 (타입별)
+const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
+  imageImport: { width: 192, height: 220 },
+  nanoImage: { width: 192, height: 260 },
+  textPrompt: { width: 220, height: 140 },
+  motionPrompt: { width: 220, height: 140 },
+  geminiVideo: { width: 192, height: 240 },
+  klingVideo: { width: 192, height: 240 },
+  soraVideo: { width: 192, height: 240 },
+  gridNode: { width: 300, height: 340 },
+  cellRegenerator: { width: 192, height: 260 },
+  gridComposer: { width: 260, height: 300 },
+  llmPrompt: { width: 220, height: 160 },
+}
+const DEFAULT_DIM = { width: 200, height: 200 }
+
+/**
+ * 자동 레이아웃 (좌→우 방향, 토폴로지 정렬)
+ * dagre 없이 직접 구현
+ */
+function autoLayoutNodes(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return nodes
+
+  const HORIZONTAL_GAP = 80
+  const VERTICAL_GAP = 50
+
+  // 1. 인접 리스트 구성
+  const outgoing = new Map<string, string[]>()
+  const incoming = new Map<string, string[]>()
+  const nodeMap = new Map<string, Node>()
+
+  for (const n of nodes) {
+    nodeMap.set(n.id, n)
+    outgoing.set(n.id, [])
+    incoming.set(n.id, [])
+  }
+  for (const e of edges) {
+    if (nodeMap.has(e.source) && nodeMap.has(e.target)) {
+      outgoing.get(e.source)!.push(e.target)
+      incoming.get(e.target)!.push(e.source)
+    }
+  }
+
+  // 2. 토폴로지 정렬로 열(column) 결정 (가장 긴 경로 기준)
+  const column = new Map<string, number>()
+
+  // BFS 방식으로 각 노드의 최대 깊이 계산
+  const visited = new Set<string>()
+  const queue: string[] = []
+
+  // 루트 노드 (incoming 0) 찾기
+  for (const n of nodes) {
+    if (incoming.get(n.id)!.length === 0) {
+      column.set(n.id, 0)
+      queue.push(n.id)
+    }
+  }
+
+  // 루트가 없으면 (사이클) 모든 노드를 루트로
+  if (queue.length === 0) {
+    for (const n of nodes) {
+      column.set(n.id, 0)
+      queue.push(n.id)
+    }
+  }
+
+  // 각 노드의 열 = max(부모 열) + 1
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    if (visited.has(id)) continue
+    visited.add(id)
+
+    const col = column.get(id) ?? 0
+    for (const target of outgoing.get(id) || []) {
+      const currentCol = column.get(target) ?? 0
+      column.set(target, Math.max(currentCol, col + 1))
+      queue.push(target)
+    }
+  }
+
+  // 연결 안 된 노드에 열 할당
+  let maxCol = 0
+  for (const c of column.values()) {
+    maxCol = Math.max(maxCol, c)
+  }
+  for (const n of nodes) {
+    if (!column.has(n.id)) {
+      column.set(n.id, maxCol + 1)
+    }
+  }
+
+  // 3. 열별로 노드 그룹화
+  const columns = new Map<number, Node[]>()
+  for (const n of nodes) {
+    const col = column.get(n.id) ?? 0
+    if (!columns.has(col)) columns.set(col, [])
+    columns.get(col)!.push(n)
+  }
+
+  // 4. 위치 계산
+  let xOffset = 0
+  const sortedCols = Array.from(columns.keys()).sort((a, b) => a - b)
+
+  const newPositions = new Map<string, { x: number; y: number }>()
+
+  for (const col of sortedCols) {
+    const colNodes = columns.get(col)!
+    let maxWidth = 0
+
+    // 열의 최대 너비 계산
+    for (const n of colNodes) {
+      const dim = NODE_DIMENSIONS[n.type || ''] || DEFAULT_DIM
+      maxWidth = Math.max(maxWidth, dim.width)
+    }
+
+    // 열 내 노드 수직 배치
+    let yOffset = 0
+    for (const n of colNodes) {
+      const dim = NODE_DIMENSIONS[n.type || ''] || DEFAULT_DIM
+      newPositions.set(n.id, {
+        x: xOffset + (maxWidth - dim.width) / 2,
+        y: yOffset,
+      })
+      yOffset += dim.height + VERTICAL_GAP
+    }
+
+    xOffset += maxWidth + HORIZONTAL_GAP
+  }
+
+  // 5. 전체를 중앙 정렬
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const pos of newPositions.values()) {
+    minX = Math.min(minX, pos.x)
+    minY = Math.min(minY, pos.y)
+    maxX = Math.max(maxX, pos.x)
+    maxY = Math.max(maxY, pos.y)
+  }
+  const centerOffsetX = -(minX + maxX) / 2
+  const centerOffsetY = -(minY + maxY) / 2
+
+  return nodes.map((n) => {
+    const pos = newPositions.get(n.id)
+    if (!pos) return n
+    return {
+      ...n,
+      position: {
+        x: pos.x + centerOffsetX,
+        y: pos.y + centerOffsetY,
+      },
+    }
+  })
+}
+
 export default function Canvas() {
-  const { screenToFlowPosition, getNodes, getViewport } = useReactFlow()
+  const { screenToFlowPosition, getNodes, getViewport, fitView } = useReactFlow()
   const nodes = useFlowStore((state) => state.nodes)
   const edges = useFlowStore((state) => state.edges)
   const onNodesChange = useFlowStore((state) => state.onNodesChange)
@@ -93,6 +248,20 @@ export default function Canvas() {
   const [copiedNodes, setCopiedNodes] = useState<Node[]>([])
   const [currentZoom, setCurrentZoom] = useState(0.35)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
+
+  // 자동 정렬 핸들러
+  const handleAutoLayout = useCallback(() => {
+    const layoutedNodes = autoLayoutNodes(nodes, edges)
+    // 노드 위치 업데이트
+    const changes = layoutedNodes.map((n) => ({
+      id: n.id,
+      type: 'position' as const,
+      position: n.position,
+    }))
+    onNodesChange(changes)
+    // 약간의 지연 후 fitView로 전체 보기
+    setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 50)
+  }, [nodes, edges, onNodesChange, fitView])
 
   // MiniMap node colors matching node icons
   const getNodeColor = useCallback((node: Node) => {
@@ -390,7 +559,20 @@ export default function Canvas() {
               opacity: 0.95,
             }}
           />
-          <Controls />
+          <Controls>
+            <ControlButton onClick={handleAutoLayout} title="노드 자동 정렬 (Auto Layout)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 16, height: 16 }}>
+                <rect x="3" y="3" width="7" height="5" rx="1" />
+                <rect x="14" y="3" width="7" height="5" rx="1" />
+                <rect x="3" y="16" width="7" height="5" rx="1" />
+                <rect x="14" y="16" width="7" height="5" rx="1" />
+                <line x1="10" y1="5.5" x2="14" y2="5.5" />
+                <line x1="10" y1="18.5" x2="14" y2="18.5" />
+                <line x1="6.5" y1="8" x2="6.5" y2="16" />
+                <line x1="17.5" y1="8" x2="17.5" y2="16" />
+              </svg>
+            </ControlButton>
+          </Controls>
         </ReactFlow>
       </div>
 

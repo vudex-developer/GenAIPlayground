@@ -130,6 +130,7 @@ export class GeminiAPIClient {
     model: string = DEFAULT_IMAGE_MODEL,
     imageSize?: '1K' | '2K' | '4K',
     abortSignal?: AbortSignal,
+    additionalImages?: string[],
   ): Promise<{ imageUrl: string; imageDataUrl: string }> {
     const enhancedPrompt = aspectRatio
       ? `${prompt}, aspect ratio ${aspectRatio}`
@@ -139,6 +140,19 @@ export class GeminiAPIClient {
       text?: string
       inlineData?: { mimeType: string; data: string }
     }> = [{ text: enhancedPrompt }]
+
+    // 추가 이미지들 (캐릭터 참조 등) 먼저 추가
+    if (additionalImages && additionalImages.length > 0) {
+      for (const imgDataUrl of additionalImages) {
+        const inlineData = parseDataUrl(imgDataUrl)
+        if (inlineData) {
+          parts.unshift({
+            inlineData: { mimeType: inlineData.mimeType, data: inlineData.bytesBase64Encoded },
+          })
+        }
+      }
+      console.log(`📸 Gemini API: ${additionalImages.length}개 추가 참조 이미지 포함`)
+    }
 
     if (sourceImageDataUrl) {
       const inlineData = parseDataUrl(sourceImageDataUrl)

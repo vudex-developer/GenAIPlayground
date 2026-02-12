@@ -194,15 +194,14 @@ export function useImagePersistence() {
   const isInitialMount = useRef(true)
 
   useEffect(() => {
-    // 초기 마운트 시: 이미지 복원
+    // 초기 마운트 시: 이미지 복원 (즉시 실행)
     if (isInitialMount.current) {
       isInitialMount.current = false
       
-      setTimeout(() => {
-        restoreAllImages().catch((error) => {
-          console.error('❌ 이미지 복원 실패:', error)
-        })
-      }, 1000) // 1초 후 복원 (UI 로드 후)
+      // 즉시 복원 시작 (UI 블로킹 없이)
+      restoreAllImages().catch((error) => {
+        console.error('❌ 이미지 복원 실패:', error)
+      })
       
       return
     }
