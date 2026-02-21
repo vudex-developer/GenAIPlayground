@@ -70,7 +70,7 @@ function WireframeSphere({ radius = 3.5, opacity = 0.15 }: { radius?: number; op
         <Line 
           key={`lat-${i}`} 
           points={points} 
-          color="#64748b" 
+          color="#94a3b8" 
           lineWidth={1} 
           opacity={opacity} 
           transparent 
@@ -82,7 +82,7 @@ function WireframeSphere({ radius = 3.5, opacity = 0.15 }: { radius?: number; op
         <Line 
           key={`long-${i}`} 
           points={points} 
-          color="#64748b" 
+          color="#94a3b8" 
           lineWidth={1} 
           opacity={opacity} 
           transparent 
@@ -811,7 +811,7 @@ function EndFrameIndicator({
 // Grid floor
 function GridFloor() {
   return (
-    <gridHelper args={[10, 10, '#374151', '#1f2937']} position={[0, -3, 0]} />
+    <gridHelper args={[10, 10, '#6b7280', '#4b5563']} position={[0, -3, 0]} />
   )
 }
 

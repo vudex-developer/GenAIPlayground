@@ -143,9 +143,9 @@ export default function GridNode({
         type="target"
         position={Position.Left}
         id="input"
-        style={{ background: isCharacterMode ? '#a78bfa' : '#22d3ee' }}
-        className="!h-4 !w-4"
-        title="Connect Prompt nodes here"
+        style={{ background: '#a78bfa' }}
+        className="!h-[7px] !w-[7px]"
+        title="Prompt Input"
       />
 
       {/* Output Handles - Right (one for each slot) */}
@@ -162,9 +162,9 @@ export default function GridNode({
               id={slot.id}
               style={{ 
                 top: `${yPosition}%`,
-                background: hasPrompt ? (isCharacterMode ? '#a78bfa' : '#22d3ee') : '#64748b',
+                background: hasPrompt ? '#a78bfa' : '#64748b',
               }}
-              className="!h-3 !w-3 !border-2 !border-[#1c2431]"
+              className="!h-[7px] !w-[7px] !border-0"
               title={`${slot.id}: ${slot.label}`}
             />
           )
@@ -181,7 +181,7 @@ export default function GridNode({
           transform: 'translateX(-50%)',
           background: '#3b82f6'
         }}
-        className="!h-3 !w-3 !border-2 !border-[#1c2431]"
+        className="!h-[7px] !w-[7px] !border-0"
         title="Grid Layout Info (for Cell Regenerator)"
       />
     </div>

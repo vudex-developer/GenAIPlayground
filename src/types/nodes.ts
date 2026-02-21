@@ -2,12 +2,10 @@ import type { Edge, Node } from 'reactflow'
 
 export type NodeType =
   | 'imageImport'
-  | 'nanoImage'
+  | 'genImage'
+  | 'movie'
   | 'textPrompt'
   | 'motionPrompt'
-  | 'geminiVideo'
-  | 'klingVideo'
-  | 'soraVideo'
   | 'gridNode'
   | 'cellRegenerator'
   | 'gridComposer'
@@ -29,25 +27,32 @@ export type TextPromptNodeData = {
   prompt: string
 }
 
-export type NanoImageModel = 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'
-export type NanoImageResolution = '1K' | '2K' | '4K'
+// Image generation provider
+export type ImageProvider = 'nanoBanana'  // Gemini-based (default). Future: 'dalle' | 'flux' | 'midjourney' etc.
 
-export type NanoImageNodeData = {
+export type GenImageModel = 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'
+export type GenImageResolution = '1K' | '2K' | '4K'
+
+export type GenImageNodeData = {
   status: NodeStatus
+  provider: ImageProvider
   prompt: string
-  model: NanoImageModel
-  resolution: NanoImageResolution
+  model: GenImageModel
+  resolution: GenImageResolution
   aspectRatio: '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9' | '3:2' | '2:3' | '5:4' | '4:5'
   outputImageUrl?: string
   outputImageDataUrl?: string
   error?: string
-  // Store settings used for generation
-  generatedModel?: NanoImageModel
-  generatedResolution?: NanoImageResolution
+  generatedModel?: GenImageModel
+  generatedResolution?: GenImageResolution
   generatedAspectRatio?: '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9' | '3:2' | '2:3' | '5:4' | '4:5'
-  // Multi-reference support
-  maxReferences: number  // Number of reference input handles (1-5)
+  maxReferences: number
 }
+
+// Backward-compatible aliases
+export type NanoImageModel = GenImageModel
+export type NanoImageResolution = GenImageResolution
+export type NanoImageNodeData = GenImageNodeData
 
 export type RotationSubject = 'camera-orbit' | 'character-turn'
 
@@ -149,6 +154,41 @@ export type SoraVideoNodeData = {
   error?: string
 }
 
+// Video provider
+export type VideoProvider = 'veo' | 'kling' | 'sora'
+
+// Unified Movie Node
+export type MovieNodeData = {
+  status: NodeStatus
+  provider: VideoProvider
+  inputImageUrl?: string
+  inputImageDataUrl?: string
+  inputPrompt?: string
+  outputVideoUrl?: string
+  progress: number
+  error?: string
+  // Veo (Gemini) specific
+  veoModel: GeminiVideoModel
+  veoDuration: 5 | 10
+  veoMotionIntensity: 'low' | 'medium' | 'high'
+  veoQuality: 'standard' | 'high'
+  // Kling specific
+  klingModel: KlingVideoModel
+  klingDuration: 5 | 10
+  klingAspectRatio: '16:9' | '9:16' | '1:1'
+  klingEnableMotionControl: boolean
+  klingCameraControl: KlingCameraControl
+  klingMotionValue: number
+  klingEndImageUrl?: string
+  klingEndImageDataUrl?: string
+  klingTaskId?: string
+  // Sora specific
+  soraModel: SoraVideoModel
+  soraDuration: 4 | 8 | 12
+  soraResolution: SoraVideoResolution
+  soraVideoId?: string
+}
+
 // Grid Node Types
 export type GridLayout = '1x2' | '1x3' | '1x4' | '1x6' | '2x2' | '2x3' | '3x2' | '3x3'
 export type GridMode = 'character' | 'storyboard'
@@ -211,8 +251,8 @@ export type CellRegeneratorNodeData = {
   slots?: GridSlot[]  // From connected Grid Node
   inputImageUrl?: string  // Labeled grid image
   inputImageDataUrl?: string
-  model: NanoImageModel
-  resolution: NanoImageResolution
+  model: GenImageModel
+  resolution: GenImageResolution
   aspectRatio: '1:1' | '16:9' | '9:16' | '4:3' | '3:4'
   // Selected slots for extraction (empty = all)
   selectedSlots: string[]  // slotId[] - 빈 배열이면 전체 추출
@@ -255,7 +295,7 @@ export type LLMPromptNodeData = {
   targetUse: 'image' | 'video' | 'general'  // 용도
   provider: 'gemini' | 'openai'  // LLM Provider
   model: 'gemini-2.5-flash' | 'gemini-2.5-flash-lite' | 'gemini-2.5-pro' | 'gpt-4o' | 'gpt-4o-mini' | 'gpt-4-turbo' | 'gpt-3.5-turbo'  // LLM 모델
-  referenceMode: 'creative' | 'balanced' | 'exact'  // Reference accuracy level (Grid Composer → Nano Banana)
+  referenceMode: 'creative' | 'balanced' | 'exact'  // Reference accuracy level (Grid Composer → Gen Image)
   referenceImageUrl?: string  // 참고 이미지 URL
   referenceImageDataUrl?: string  // 참고 이미지 Data URL
   error?: string
@@ -263,7 +303,8 @@ export type LLMPromptNodeData = {
 
 export type NodeData =
   | ImageImportNodeData
-  | NanoImageNodeData
+  | GenImageNodeData
+  | MovieNodeData
   | TextPromptNodeData
   | MotionPromptNodeData
   | GeminiVideoNodeData
@@ -284,14 +325,15 @@ export const createNodeData = (type: NodeType): NodeData => {
       return {}
     case 'textPrompt':
       return { prompt: '' }
-    case 'nanoImage':
+    case 'genImage':
       return {
         status: 'idle',
+        provider: 'nanoBanana',
         prompt: '',
         model: 'gemini-3-pro-image-preview',
         resolution: '2K',
         aspectRatio: '1:1',
-        maxReferences: 3,  // Default: 3 reference images
+        maxReferences: 3,
       }
     case 'motionPrompt':
       return {
@@ -313,33 +355,27 @@ export const createNodeData = (type: NodeType): NodeData => {
         endTilt: 0,
         endDistance: 1.0,
       }
-    case 'geminiVideo':
+    case 'movie':
       return {
         status: 'idle',
-        model: 'veo-3.1-generate-preview',
-        duration: 5,
-        motionIntensity: 'medium',
-        quality: 'high',
+        provider: 'veo',
         progress: 0,
-      }
-    case 'klingVideo':
-      return {
-        status: 'idle',
-        model: 'kling-v1-6',
-        duration: 5,
-        aspectRatio: '16:9',
-        enableMotionControl: false,
-        cameraControl: 'none',
-        motionValue: 0,
-        progress: 0,
-      }
-    case 'soraVideo':
-      return {
-        status: 'idle',
-        model: 'sora-2',
-        duration: 8,
-        resolution: '1280x720',
-        progress: 0,
+        // Veo defaults
+        veoModel: 'veo-3.1-generate-preview',
+        veoDuration: 5,
+        veoMotionIntensity: 'medium',
+        veoQuality: 'high',
+        // Kling defaults
+        klingModel: 'kling-v1-6',
+        klingDuration: 5,
+        klingAspectRatio: '16:9',
+        klingEnableMotionControl: false,
+        klingCameraControl: 'none',
+        klingMotionValue: 0,
+        // Sora defaults
+        soraModel: 'sora-2',
+        soraDuration: 8,
+        soraResolution: '1280x720',
       }
     case 'gridNode':
       return {

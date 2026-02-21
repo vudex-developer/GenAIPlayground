@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState, type DragEvent } from 'react'
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   ConnectionLineType,
-  Controls,
-  ControlButton,
   MiniMap,
   useReactFlow,
   BezierEdge,
@@ -12,31 +11,34 @@ import ReactFlow, {
   type EdgeTypes,
 } from 'reactflow'
 import {
-  Banana,
   Camera,
+  Film,
   Grid3x3,
   Image as ImageIcon,
   Layers,
+  Maximize2,
   MessageSquare,
+  Minus,
+  Plus,
+  RefreshCcw,
+  Settings2,
   Sparkles,
+  Sun,
+  Undo2,
 } from 'lucide-react'
 import { useFlowStore, createWorkflowNode } from '../stores/flowStore'
 import type { NodeType } from '../types/nodes'
 import ImageImportNode from './nodes/ImageImportNode'
-import NanoImageNode from './nodes/NanoImageNode'
+import GenImageNode from './nodes/GenImageNode'
 import TextPromptNode from './nodes/TextPromptNode'
 import MotionPromptNode from './nodes/MotionPromptNode'
-import GeminiVideoNode from './nodes/GeminiVideoNode'
-import KlingVideoNode from './nodes/KlingVideoNode'
-import SoraVideoNode from './nodes/SoraVideoNode'
+import MovieNode from './nodes/MovieNode'
 import GridNode from './nodes/GridNode'
 import CellRegeneratorNode from './nodes/CellRegeneratorNode'
 import GridComposerNode from './nodes/GridComposerNode'
 import LLMPromptNode from './nodes/LLMPromptNode'
 import NodeInspector from './NodeInspector'
 import { ImageModal } from './ImageModal'
-import KlingIcon from './icons/KlingIcon'
-import SoraIcon from './icons/SoraIcon'
 
 // Custom LLM text icon component
 const LLMIcon = ({ className }: { className?: string }) => (
@@ -47,12 +49,10 @@ const LLMIcon = ({ className }: { className?: string }) => (
 
 const nodeTypes = {
   imageImport: ImageImportNode,
-  nanoImage: NanoImageNode,
+  genImage: GenImageNode,
   textPrompt: TextPromptNode,
   motionPrompt: MotionPromptNode,
-  geminiVideo: GeminiVideoNode,
-  klingVideo: KlingVideoNode,
-  soraVideo: SoraVideoNode,
+  movie: MovieNode,
   gridNode: GridNode,
   cellRegenerator: CellRegeneratorNode,
   gridComposer: GridComposerNode,
@@ -68,17 +68,15 @@ const toolbarItems: Array<{
   type: NodeType
   label: string
   key: string
-  icon: typeof ImageIcon | typeof KlingIcon | typeof LLMIcon
+  icon: typeof ImageIcon | typeof LLMIcon
 }> = [
   { type: 'imageImport', label: 'Image Import', key: '1', icon: ImageIcon },
-  { type: 'nanoImage', label: 'Nano Banana', key: '2', icon: Banana },
+  { type: 'genImage', label: 'Gen Image', key: '2', icon: Sparkles },
   { type: 'textPrompt', label: 'Text Prompt', key: '3', icon: MessageSquare },
   { type: 'motionPrompt', label: 'Motion Prompt', key: '4', icon: Camera },
-  { type: 'geminiVideo', label: 'Gemini Video', key: '5', icon: Sparkles },
-  { type: 'klingVideo', label: 'Kling Video', key: '6', icon: KlingIcon },
-  { type: 'soraVideo', label: 'Sora Video', key: 'q', icon: SoraIcon },
+  { type: 'movie', label: 'Movie', key: '5', icon: Film },
   { type: 'gridNode', label: 'Grid Node', key: '7', icon: Grid3x3 },
-  { type: 'cellRegenerator', label: 'Cell Regenerator', key: '8', icon: Sparkles },
+  { type: 'cellRegenerator', label: 'Cell Regenerator', key: '8', icon: RefreshCcw },
   { type: 'gridComposer', label: 'Grid Composer', key: '9', icon: Layers },
   { type: 'llmPrompt', label: 'LLM Prompt', key: '0', icon: LLMIcon },
 ]
@@ -86,12 +84,10 @@ const toolbarItems: Array<{
 // 노드 너비/높이 추정치 (타입별)
 const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
   imageImport: { width: 192, height: 220 },
-  nanoImage: { width: 192, height: 260 },
+  genImage: { width: 192, height: 260 },
   textPrompt: { width: 220, height: 140 },
   motionPrompt: { width: 220, height: 140 },
-  geminiVideo: { width: 192, height: 240 },
-  klingVideo: { width: 192, height: 240 },
-  soraVideo: { width: 192, height: 240 },
+  movie: { width: 192, height: 240 },
   gridNode: { width: 300, height: 340 },
   cellRegenerator: { width: 192, height: 260 },
   gridComposer: { width: 260, height: 300 },
@@ -237,7 +233,7 @@ function autoLayoutNodes(nodes: Node[], edges: Edge[]): Node[] {
 }
 
 export default function Canvas() {
-  const { screenToFlowPosition, getNodes, getViewport, fitView } = useReactFlow()
+  const { screenToFlowPosition, getNodes, getViewport, fitView, zoomIn, zoomOut } = useReactFlow()
   const nodes = useFlowStore((state) => state.nodes)
   const edges = useFlowStore((state) => state.edges)
   const onNodesChange = useFlowStore((state) => state.onNodesChange)
@@ -247,21 +243,66 @@ export default function Canvas() {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
   const [copiedNodes, setCopiedNodes] = useState<Node[]>([])
   const [currentZoom, setCurrentZoom] = useState(0.35)
+  const [preLayoutPositions, setPreLayoutPositions] = useState<Record<string, { x: number; y: number }> | null>(null)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
 
-  // 자동 정렬 핸들러
+  // 배경 그리드 설정
+  const [bgVariant, setBgVariant] = useState<'dots' | 'lines' | 'cross'>('dots')
+  const [bgGap, setBgGap] = useState(20)
+  const [bgOpacity, setBgOpacity] = useState(40)
+  const [bgSize, setBgSize] = useState(1.2)
+  const [showBgSettings, setShowBgSettings] = useState(false)
+
+  // 자동 정렬 핸들러 (선택된 노드만 or 전체)
   const handleAutoLayout = useCallback(() => {
-    const layoutedNodes = autoLayoutNodes(nodes, edges)
-    // 노드 위치 업데이트
+    const selectedNodes = nodes.filter((n) => n.selected)
+    const isPartial = selectedNodes.length >= 2
+    const targetNodes = isPartial ? selectedNodes : nodes
+
+    const saved: Record<string, { x: number; y: number }> = {}
+    for (const n of targetNodes) {
+      saved[n.id] = { x: n.position.x, y: n.position.y }
+    }
+    setPreLayoutPositions(saved)
+
+    const targetIds = new Set(targetNodes.map((n) => n.id))
+    const relevantEdges = edges.filter((e) => targetIds.has(e.source) && targetIds.has(e.target))
+
+    const layoutedNodes = autoLayoutNodes(targetNodes, relevantEdges)
+
+    if (isPartial) {
+      const origMinX = Math.min(...targetNodes.map((n) => n.position.x))
+      const origMinY = Math.min(...targetNodes.map((n) => n.position.y))
+      const layoutMinX = Math.min(...layoutedNodes.map((n) => n.position.x))
+      const layoutMinY = Math.min(...layoutedNodes.map((n) => n.position.y))
+      const offsetX = origMinX - layoutMinX
+      const offsetY = origMinY - layoutMinY
+      for (const n of layoutedNodes) {
+        n.position.x += offsetX
+        n.position.y += offsetY
+      }
+    }
+
     const changes = layoutedNodes.map((n) => ({
       id: n.id,
       type: 'position' as const,
       position: n.position,
     }))
     onNodesChange(changes)
-    // 약간의 지연 후 fitView로 전체 보기
     setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 50)
   }, [nodes, edges, onNodesChange, fitView])
+
+  const handleUndoLayout = useCallback(() => {
+    if (!preLayoutPositions) return
+    const changes = Object.entries(preLayoutPositions).map(([id, position]) => ({
+      id,
+      type: 'position' as const,
+      position,
+    }))
+    onNodesChange(changes)
+    setPreLayoutPositions(null)
+    setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 50)
+  }, [preLayoutPositions, onNodesChange, fitView])
 
   // MiniMap node colors matching node icons
   const getNodeColor = useCallback((node: Node) => {
@@ -272,14 +313,10 @@ export default function Canvas() {
         return '#a78bfa' // violet-400
       case 'motionPrompt':
         return '#e879f9' // fuchsia-400
-      case 'nanoImage':
+      case 'genImage':
         return '#facc15' // yellow-400
-      case 'geminiVideo':
+      case 'movie':
         return '#60a5fa' // blue-400
-      case 'klingVideo':
-        return '#4ade80' // green-400
-      case 'soraVideo':
-        return '#f97316' // orange-500
       case 'gridNode':
         return '#a78bfa' // violet-400
       case 'cellRegenerator':
@@ -487,26 +524,72 @@ export default function Canvas() {
           <div>• Ctrl/Cmd + V to paste</div>
         </div>
 
-        <div className="pointer-events-auto absolute left-4 top-4 z-20 flex h-[calc(100%-2rem)] w-12 flex-col items-center gap-2 rounded-xl border border-white/10 bg-[#0f141a]/95 p-2 shadow-lg" style={{ opacity: 0.95 }}>
-          {toolbarItems.map((item) => {
-            const Icon = item.icon
-            const isLLMIcon = item.type === 'llmPrompt'
-            return (
-              <button
-                key={item.type}
-                type="button"
-                title={`${item.label} (${item.key})`}
-                onClick={() => addNodeAtCenter(item.type)}
-                className="group flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition hover:border-white/10 hover:bg-white/5 hover:text-slate-100"
-              >
-                {isLLMIcon ? (
-                  <Icon className="" />
-                ) : (
-                  <Icon className="h-4 w-4" />
-                )}
+        <div className="pointer-events-auto absolute left-4 top-4 z-20 flex flex-col items-center gap-3">
+          {/* Node Palette */}
+          <div className="flex w-12 flex-col items-center gap-2 rounded-xl border border-white/10 bg-[#0f141a]/95 p-2 shadow-lg" style={{ opacity: 0.95 }}>
+            {toolbarItems.map((item) => {
+              const Icon = item.icon
+              const isLLMIcon = item.type === 'llmPrompt'
+              return (
+                <div key={item.type} className="group relative">
+                  <button
+                    type="button"
+                    onClick={() => addNodeAtCenter(item.type)}
+                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent transition hover:border-white/10 hover:bg-white/5"
+                  >
+                    {isLLMIcon ? (
+                      <Icon className="text-slate-400" />
+                    ) : (
+                      <Icon className="h-4 w-4 text-slate-400" />
+                    )}
+                  </button>
+                  <div className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-slate-100 opacity-0 shadow-lg ring-1 ring-white/10 transition-opacity group-hover:opacity-100">
+                    {item.label}
+                    <span className="ml-1.5 text-slate-500">({item.key})</span>
+                    <div className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-slate-800" />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Controls - collapsed icon, expands on hover */}
+          <div className="group">
+            <div className="flex h-9 w-12 items-center justify-center rounded-xl border border-white/10 bg-[#0f141a]/95 shadow-lg cursor-pointer group-hover:hidden" style={{ opacity: 0.95 }}>
+              <Settings2 className="h-4 w-4 text-slate-400" />
+            </div>
+            <div className="hidden w-12 flex-col items-center gap-1 rounded-xl border border-white/10 bg-[#0f141a]/95 p-2 shadow-lg group-hover:flex" style={{ opacity: 0.95 }}>
+              <button onClick={() => zoomIn()} title="줌 인" className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition hover:border-white/10 hover:bg-white/5">
+                <Plus className="h-4 w-4" />
               </button>
-            )
-          })}
+              <button onClick={() => zoomOut()} title="줌 아웃" className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition hover:border-white/10 hover:bg-white/5">
+                <Minus className="h-4 w-4" />
+              </button>
+              <button onClick={() => fitView({ padding: 0.2 })} title="전체 보기" className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition hover:border-white/10 hover:bg-white/5">
+                <Maximize2 className="h-4 w-4" />
+              </button>
+              <button onClick={handleAutoLayout} title="노드 자동 정렬" className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition hover:border-white/10 hover:bg-white/5">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 16, height: 16 }}>
+                  <rect x="3" y="3" width="7" height="5" rx="1" />
+                  <rect x="14" y="3" width="7" height="5" rx="1" />
+                  <rect x="3" y="16" width="7" height="5" rx="1" />
+                  <rect x="14" y="16" width="7" height="5" rx="1" />
+                  <line x1="10" y1="5.5" x2="14" y2="5.5" />
+                  <line x1="10" y1="18.5" x2="14" y2="18.5" />
+                  <line x1="6.5" y1="8" x2="6.5" y2="16" />
+                  <line x1="17.5" y1="8" x2="17.5" y2="16" />
+                </svg>
+              </button>
+              {preLayoutPositions && (
+                <button onClick={handleUndoLayout} title="정렬 되돌리기" className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-amber-400 transition hover:border-white/10 hover:bg-white/5">
+                  <Undo2 className="h-4 w-4" />
+                </button>
+              )}
+              <button onClick={() => setShowBgSettings(!showBgSettings)} title="배경 그리드 설정" className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition hover:border-white/10 hover:bg-white/5">
+                <Sun className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </div>
         <ReactFlow
           nodes={nodes}
@@ -544,8 +627,13 @@ export default function Canvas() {
           nodeOrigin={[0.5, 0]}
           elevateNodesOnSelect={false}
         >
-          <Background gap={22} color="#121a24" />
-          <MiniMap 
+          <Background
+            variant={bgVariant === 'dots' ? BackgroundVariant.Dots : bgVariant === 'lines' ? BackgroundVariant.Lines : BackgroundVariant.Cross}
+            gap={bgGap}
+            size={bgSize}
+            color={`rgba(148, 163, 184, ${bgOpacity / 100})`}
+          />
+          <MiniMap
             pannable 
             zoomable
             nodeColor={getNodeColor}
@@ -559,20 +647,90 @@ export default function Canvas() {
               opacity: 0.95,
             }}
           />
-          <Controls>
-            <ControlButton onClick={handleAutoLayout} title="노드 자동 정렬 (Auto Layout)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 16, height: 16 }}>
-                <rect x="3" y="3" width="7" height="5" rx="1" />
-                <rect x="14" y="3" width="7" height="5" rx="1" />
-                <rect x="3" y="16" width="7" height="5" rx="1" />
-                <rect x="14" y="16" width="7" height="5" rx="1" />
-                <line x1="10" y1="5.5" x2="14" y2="5.5" />
-                <line x1="10" y1="18.5" x2="14" y2="18.5" />
-                <line x1="6.5" y1="8" x2="6.5" y2="16" />
-                <line x1="17.5" y1="8" x2="17.5" y2="16" />
-              </svg>
-            </ControlButton>
-          </Controls>
+
+          {/* 배경 그리드 설정 패널 */}
+          {showBgSettings && (
+            <div
+              className="absolute z-30 rounded-xl border border-white/10 bg-[#0f141a]/95 backdrop-blur-sm shadow-2xl p-3 space-y-3"
+              style={{ left: '5rem', bottom: '11rem', width: '200px' }}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">Grid</span>
+                <button
+                  onClick={() => setShowBgSettings(false)}
+                  className="text-slate-500 hover:text-slate-300 transition text-xs"
+                >
+                  &times;
+                </button>
+              </div>
+
+              {/* 패턴 타입 */}
+              <div className="flex gap-1">
+                {(['dots', 'lines', 'cross'] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setBgVariant(v)}
+                    className={`flex-1 rounded-md px-2 py-1 text-[10px] font-medium transition ${
+                      bgVariant === v
+                        ? 'bg-blue-500/30 text-blue-300 border border-blue-400/40'
+                        : 'bg-white/5 text-slate-400 border border-transparent hover:bg-white/10'
+                    }`}
+                  >
+                    {v === 'dots' ? 'Dots' : v === 'lines' ? 'Lines' : 'Cross'}
+                  </button>
+                ))}
+              </div>
+
+              {/* 간격 */}
+              <div>
+                <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                  <span>Gap</span>
+                  <span>{bgGap}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="8"
+                  max="60"
+                  value={bgGap}
+                  onChange={(e) => setBgGap(Number(e.target.value))}
+                  className="w-full h-1 rounded-full appearance-none bg-white/10 accent-blue-400"
+                />
+              </div>
+
+              {/* 밝기 */}
+              <div>
+                <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                  <span>Opacity</span>
+                  <span>{bgOpacity}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="5"
+                  max="80"
+                  value={bgOpacity}
+                  onChange={(e) => setBgOpacity(Number(e.target.value))}
+                  className="w-full h-1 rounded-full appearance-none bg-white/10 accent-blue-400"
+                />
+              </div>
+
+              {/* 크기 */}
+              <div>
+                <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                  <span>Size</span>
+                  <span>{bgSize.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="4"
+                  step="0.1"
+                  value={bgSize}
+                  onChange={(e) => setBgSize(Number(e.target.value))}
+                  className="w-full h-1 rounded-full appearance-none bg-white/10 accent-blue-400"
+                />
+              </div>
+            </div>
+          )}
         </ReactFlow>
       </div>
 

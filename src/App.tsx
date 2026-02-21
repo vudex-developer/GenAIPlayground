@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ReactFlowProvider } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff, Shield, Database } from 'lucide-react'
+import { Download, FolderOpen, Save, Settings, Undo2, Redo2, WifiOff, Shield, Database, ImageIcon, X } from 'lucide-react'
 import Canvas from './components/Canvas'
 import { OnboardingGuide } from './components/OnboardingGuide'
 import { useFlowStore } from './stores/flowStore'
@@ -9,7 +9,7 @@ import { useNetworkStatus } from './hooks/useNetworkStatus'
 import { useImagePersistence } from './hooks/useImagePersistence'
 import { getStorageInfo, analyzeStorage, clearStorageByPattern, cleanupOldBackups } from './utils/storage'
 import { getAllBackups, restoreBackup, getBackupStats } from './utils/backup'
-import { getStorageStats as getIndexedDBStats } from './utils/indexedDB'
+import { getStorageStats as getIndexedDBStats, saveImage } from './utils/indexedDB'
 import type { WorkflowEdge, WorkflowNode } from './types/nodes'
 import vudexLogo from './assets/vudex-logo.png'
 
@@ -30,15 +30,105 @@ function App() {
   const setKlingApiKey = useFlowStore((state) => state.setKlingApiKey)
   const nodes = useFlowStore((state) => state.nodes)
   const edges = useFlowStore((state) => state.edges)
+  const updateNodeData = useFlowStore((state) => state.updateNodeData)
   const [showSettings, setShowSettings] = useState(false)
   const [showBackups, setShowBackups] = useState(false)
+  const [showImageRestore, setShowImageRestore] = useState(false)
+  const [missingImages, setMissingImages] = useState<Array<{ nodeId: string; fileName: string; restored: boolean }>>([])
   const [saveStatus, setSaveStatus] = useState('')
   const [idbStats, setIdbStats] = useState({ images: 0, videos: 0, totalSizeMB: '0' })
   const [s3Config, setS3Config] = useState({ available: false, region: '', bucket: '' })
   const isOnline = useNetworkStatus()
+  const batchFileInputRef = useRef<HTMLInputElement>(null)
   
   // 🗄️ IndexedDB 자동 이미지 저장/복원
   useImagePersistence()
+
+  const scanMissingImages = async () => {
+    const { getImage } = await import('./utils/indexedDB')
+    const imageImportNodes = nodes.filter(
+      (n) => n.type === 'imageImport' && n.data && 'fileName' in n.data && (n.data as any).fileName
+    )
+
+    const results: Array<{ nodeId: string; fileName: string; restored: boolean }> = []
+
+    for (const node of imageImportNodes) {
+      const d = node.data as any
+      const ref = d.imageDataUrl || d.imageUrl
+      let isMissing = false
+
+      if (!ref) {
+        isMissing = true
+      } else if (typeof ref === 'string' && (ref.startsWith('idb:') || ref.startsWith('s3:'))) {
+        try {
+          const result = await getImage(ref)
+          if (!result) isMissing = true
+        } catch {
+          isMissing = true
+        }
+      }
+
+      if (isMissing) {
+        results.push({ nodeId: node.id, fileName: d.fileName, restored: false })
+      }
+    }
+
+    setMissingImages(results)
+    setShowImageRestore(true)
+  }
+
+  const handleBatchRestore = async (files: FileList) => {
+    let matchedCount = 0
+
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('image/')) continue
+
+      const matchIdx = missingImages.findIndex(
+        (m) => !m.restored && m.fileName === file.name
+      )
+
+      if (matchIdx !== -1) {
+        const matched = missingImages[matchIdx]
+        try {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = () => reject(reader.error)
+            reader.readAsDataURL(file)
+          })
+
+          const imageId = `img-import-${Date.now()}-${Math.random().toString(36).substring(7)}`
+          const savedRef = await saveImage(imageId, dataUrl, matched.nodeId, true)
+
+          const img = new Image()
+          await new Promise<void>((resolve) => {
+            img.onload = () => resolve()
+            img.onerror = () => resolve()
+            img.src = dataUrl
+          })
+
+          updateNodeData(matched.nodeId, {
+            imageDataUrl: savedRef,
+            imageUrl: URL.createObjectURL(file),
+            width: img.naturalWidth || undefined,
+            height: img.naturalHeight || undefined,
+          })
+
+          setMissingImages((prev) =>
+            prev.map((m, i) => (i === matchIdx ? { ...m, restored: true } : m))
+          )
+          matchedCount++
+        } catch (error) {
+          console.error(`❌ 복구 실패: ${file.name}`, error)
+        }
+      }
+    }
+
+    if (matchedCount > 0) {
+      setSaveStatus(`${matchedCount}개 이미지 복구 완료`)
+      setTimeout(() => setSaveStatus(''), 3000)
+    }
+  }
   
   // 📊 IndexedDB 통계 주기적 업데이트
   useEffect(() => {
@@ -381,6 +471,17 @@ function App() {
           </button>
           <button
             type="button"
+            onClick={() => void scanMissingImages()}
+            className="rounded-full border border-white/10 bg-[#121824] px-4 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-white/5"
+            title="누락된 이미지를 스캔하고 일괄 복구합니다"
+          >
+            <span className="flex items-center gap-1">
+              <ImageIcon className="h-4 w-4" />
+              이미지 복구
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={() => setShowSettings(true)}
             className="rounded-full border border-white/10 bg-[#121824] px-4 py-1.5 text-[11px] font-semibold text-slate-200 hover:bg-white/5"
           >
@@ -508,6 +609,135 @@ function App() {
               <button
                 type="button"
                 onClick={() => setShowBackups(false)}
+                className="rounded-md border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/5"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showImageRestore ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg space-y-4 rounded-xl bg-[#111821] p-5 shadow-lg">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-white">이미지 복구</h3>
+              <button
+                onClick={() => setShowImageRestore(false)}
+                className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {missingImages.length === 0 ? (
+              <div className="rounded-lg border border-green-500/20 bg-green-500/10 p-4 text-center">
+                <div className="text-sm font-medium text-green-400">모든 이미지가 정상입니다</div>
+                <div className="mt-1 text-xs text-slate-400">누락된 이미지가 없습니다</div>
+              </div>
+            ) : (
+              <>
+                <div className="text-xs text-slate-400">
+                  {missingImages.filter((m) => !m.restored).length}개의 누락된 이미지가 있습니다.
+                  파일을 클릭하여 개별 복구하거나, 하단 버튼으로 일괄 복구하세요.
+                </div>
+
+                <div className="max-h-60 space-y-1.5 overflow-y-auto rounded-lg border border-white/10 bg-white/5 p-3">
+                  {missingImages.map((m, idx) => (
+                    <label
+                      key={m.nodeId}
+                      className={`flex cursor-pointer items-center justify-between rounded-md px-3 py-2.5 text-xs transition ${
+                        m.restored
+                          ? 'bg-green-500/10 text-green-400'
+                          : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={m.restored}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0]
+                          if (!file) return
+                          event.currentTarget.value = ''
+                          void (async () => {
+                            try {
+                              const dataUrl = await new Promise<string>((resolve, reject) => {
+                                const reader = new FileReader()
+                                reader.onload = () => resolve(reader.result as string)
+                                reader.onerror = () => reject(reader.error)
+                                reader.readAsDataURL(file)
+                              })
+                              const imageId = `img-import-${Date.now()}-${Math.random().toString(36).substring(7)}`
+                              const savedRef = await saveImage(imageId, dataUrl, m.nodeId, true)
+                              const img = new Image()
+                              await new Promise<void>((resolve) => {
+                                img.onload = () => resolve()
+                                img.onerror = () => resolve()
+                                img.src = dataUrl
+                              })
+                              updateNodeData(m.nodeId, {
+                                imageDataUrl: savedRef,
+                                imageUrl: URL.createObjectURL(file),
+                                fileName: file.name,
+                                width: img.naturalWidth || undefined,
+                                height: img.naturalHeight || undefined,
+                              })
+                              setMissingImages((prev) =>
+                                prev.map((item, i) => (i === idx ? { ...item, fileName: file.name, restored: true } : item))
+                              )
+                            } catch (error) {
+                              console.error('❌ 개별 복구 실패:', error)
+                            }
+                          })()
+                        }}
+                      />
+                      <span className="truncate" title={m.fileName}>
+                        {m.restored ? '✓ ' : '• '}
+                        {m.fileName}
+                      </span>
+                      <span className={`ml-2 flex-shrink-0 rounded px-2 py-0.5 text-[10px] font-medium ${
+                        m.restored
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-amber-500/20 text-amber-400'
+                      }`}>
+                        {m.restored ? '복구됨' : '선택'}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                {missingImages.filter((m) => !m.restored).length > 1 && (
+                  <label className="block cursor-pointer">
+                    <input
+                      ref={batchFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        const files = event.target.files
+                        if (files && files.length > 0) {
+                          void handleBatchRestore(files)
+                        }
+                        event.currentTarget.value = ''
+                      }}
+                    />
+                    <span className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs font-medium text-slate-400 transition hover:bg-white/10 hover:text-slate-200">
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      여러 파일 한번에 복구
+                    </span>
+                  </label>
+                )}
+              </>
+            )}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setShowImageRestore(false)}
                 className="rounded-md border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/5"
               >
                 닫기
@@ -694,7 +924,7 @@ function App() {
                 🔵 Google Gemini API Key
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                이미지 생성 (Nano Image), 비디오 생성 (Gemini Video), LLM Prompt Helper에 사용됩니다.
+                이미지 생성 (Gen Image), 비디오 생성 (Movie - Veo), LLM Prompt Helper에 사용됩니다.
               </p>
               <input
                 type="password"
@@ -710,7 +940,7 @@ function App() {
                 🟢 OpenAI API Key
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                LLM Prompt Helper (GPT-4o 등) 및 Sora Video 노드에서 사용합니다.
+                LLM Prompt Helper (GPT-4o 등) 및 Movie (Sora) 노드에서 사용합니다.
                 <br />
                 <a 
                   href="https://platform.openai.com/api-keys" 

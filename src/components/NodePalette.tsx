@@ -1,4 +1,4 @@
-import type { DragEvent } from 'react'
+import { useState, type DragEvent } from 'react'
 import {
   Film,
   Image as ImageIcon,
@@ -19,61 +19,71 @@ const paletteItems: Array<{
   type: NodeType
   label: string
   icon: typeof ImageIcon | typeof LLMIcon
-  borderClass: string
-  hoverBorderClass: string
-  iconClass: string
+  borderColor: string
+  hoverBorderColor: string
+  iconColor: string
 }> = [
   {
     type: 'imageImport',
     label: 'Image Import',
     icon: ImageIcon,
-    borderClass: 'border-blue-200',
-    hoverBorderClass: 'hover:border-blue-400',
-    iconClass: 'text-blue-500',
+    borderColor: 'border-cyan-400/30',
+    hoverBorderColor: 'hover:border-cyan-400',
+    iconColor: 'text-cyan-400',
   },
   {
-    type: 'nanoImage',
-    label: 'Nano Image',
-    icon: ImageIcon,
-    borderClass: 'border-emerald-200',
-    hoverBorderClass: 'hover:border-emerald-400',
-    iconClass: 'text-emerald-500',
+    type: 'genImage',
+    label: 'Gen Image',
+    icon: Sparkles,
+    borderColor: 'border-yellow-400/30',
+    hoverBorderColor: 'hover:border-yellow-400',
+    iconColor: 'text-yellow-400',
   },
   {
     type: 'textPrompt',
     label: 'Text Prompt',
     icon: TextCursorInput,
-    borderClass: 'border-slate-200',
-    hoverBorderClass: 'hover:border-slate-400',
-    iconClass: 'text-slate-500',
+    borderColor: 'border-slate-400/30',
+    hoverBorderColor: 'hover:border-slate-400',
+    iconColor: 'text-slate-400',
   },
   {
     type: 'motionPrompt',
     label: 'Motion Prompt',
     icon: Camera,
-    borderClass: 'border-purple-200',
-    hoverBorderClass: 'hover:border-purple-400',
-    iconClass: 'text-purple-500',
+    borderColor: 'border-fuchsia-400/30',
+    hoverBorderColor: 'hover:border-fuchsia-400',
+    iconColor: 'text-fuchsia-400',
+  },
+  {
+    type: 'movie',
+    label: 'Movie',
+    icon: Film,
+    borderColor: 'border-blue-400/30',
+    hoverBorderColor: 'hover:border-blue-400',
+    iconColor: 'text-blue-400',
+  },
+  {
+    type: 'gridNode',
+    label: 'Grid Node',
+    icon: ImageIcon,
+    borderColor: 'border-violet-400/30',
+    hoverBorderColor: 'hover:border-violet-400',
+    iconColor: 'text-violet-400',
   },
   {
     type: 'llmPrompt',
     label: 'LLM Prompt',
     icon: LLMIcon,
-    borderClass: 'border-pink-200',
-    hoverBorderClass: 'hover:border-pink-400',
-    iconClass: 'text-pink-500',
-  },
-  {
-    type: 'geminiVideo',
-    label: 'Gemini Video',
-    icon: Film,
-    borderClass: 'border-orange-200',
-    hoverBorderClass: 'hover:border-orange-400',
-    iconClass: 'text-orange-500',
+    borderColor: 'border-pink-400/30',
+    hoverBorderColor: 'hover:border-pink-400',
+    iconColor: 'text-pink-400',
   },
 ]
 
 export default function NodePalette() {
+  const [hoveredType, setHoveredType] = useState<NodeType | null>(null)
+
   const handleDragStart = (event: DragEvent, type: NodeType) => {
     event.dataTransfer.setData('application/reactflow', type)
     event.dataTransfer.effectAllowed = 'move'
@@ -81,25 +91,38 @@ export default function NodePalette() {
 
   return (
     <div className="flex h-full flex-col items-center gap-3">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400 dark:text-slate-500">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
         Nodes
       </div>
       <div className="flex flex-col items-center gap-2">
         {paletteItems.map((item) => {
           const Icon = item.icon
           const isLLMIcon = item.type === 'llmPrompt'
+          const isHovered = hoveredType === item.type
           return (
             <div
               key={item.type}
-              title={item.label}
-              className={`group flex h-10 w-10 cursor-grab items-center justify-center rounded-lg border bg-white/80 text-slate-700 shadow-sm transition ${item.borderClass} ${item.hoverBorderClass} dark:border-white/10 dark:bg-white/5 dark:text-slate-200`}
-              draggable
-              onDragStart={(event) => handleDragStart(event, item.type)}
+              className="relative"
+              onMouseEnter={() => setHoveredType(item.type)}
+              onMouseLeave={() => setHoveredType(null)}
             >
-              {isLLMIcon ? (
-                <Icon className={`${item.iconClass} dark:text-slate-200`} />
-              ) : (
-                <Icon className={`h-4 w-4 ${item.iconClass} dark:text-slate-200`} />
+              <div
+                className={`group flex h-10 w-10 cursor-grab items-center justify-center rounded-lg border bg-white/5 shadow-sm transition ${item.borderColor} ${item.hoverBorderColor}`}
+                draggable
+                onDragStart={(event) => handleDragStart(event, item.type)}
+              >
+                {isLLMIcon ? (
+                  <Icon className={item.iconColor} />
+                ) : (
+                  <Icon className={`h-4 w-4 ${item.iconColor}`} />
+                )}
+              </div>
+
+              {isHovered && (
+                <div className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-slate-100 shadow-lg ring-1 ring-white/10">
+                  {item.label}
+                  <div className="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-slate-800" />
+                </div>
               )}
             </div>
           )

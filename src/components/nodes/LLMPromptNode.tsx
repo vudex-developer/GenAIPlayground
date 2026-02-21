@@ -149,7 +149,7 @@ export default function LLMPromptNode({
         position={Position.Left}
         id="basePrompt"
         style={{ top: '20%' }}
-        className="!h-3 !w-3 !bg-violet-400"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
         title="기본 프롬프트"
       />
       <Handle
@@ -157,7 +157,7 @@ export default function LLMPromptNode({
         position={Position.Left}
         id="motionPrompt"
         style={{ top: '40%' }}
-        className="!h-3 !w-3 !bg-fuchsia-400"
+        className="!h-[7px] !w-[7px] !bg-fuchsia-400"
         title="모션 프롬프트"
       />
       <Handle
@@ -165,13 +165,13 @@ export default function LLMPromptNode({
         position={Position.Left}
         id="image"
         style={{ top: '70%' }}
-        className="!h-3 !w-3 !bg-cyan-400"
+        className="!h-[7px] !w-[7px] !bg-yellow-500"
         title="참고 이미지"
       />
       <Handle
         type="source"
         position={Position.Right}
-        className="!h-3 !w-3 !bg-pink-500"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
         title="정제된 프롬프트"
       />
     </div>

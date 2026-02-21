@@ -17,53 +17,39 @@ body {
   );
 }
 
-/* Text Prompt - violet-400 */
-.react-flow__edge.edge-text-prompt .react-flow__edge-path {
+/* Prompt - violet-400 */
+.react-flow__edge.edge-prompt .react-flow__edge-path {
   stroke: rgb(167, 139, 250);
   stroke-width: 2;
   filter: drop-shadow(0 0 8px rgba(167, 139, 250, 0.5));
 }
 
 /* Motion Prompt - fuchsia-400 */
-.react-flow__edge.edge-motion-prompt .react-flow__edge-path {
+.react-flow__edge.edge-motion .react-flow__edge-path {
   stroke: rgb(232, 121, 249);
   stroke-width: 2;
   filter: drop-shadow(0 0 8px rgba(232, 121, 249, 0.5));
 }
 
-/* Image Import - cyan-400 */
-.react-flow__edge.edge-image-import .react-flow__edge-path {
-  stroke: rgb(34, 211, 238);
+/* Image - yellow-500 */
+.react-flow__edge.edge-image .react-flow__edge-path {
+  stroke: rgb(234, 179, 8);
   stroke-width: 2;
-  filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.5));
+  filter: drop-shadow(0 0 8px rgba(234, 179, 8, 0.5));
 }
 
-/* Nano Banana - yellow-400 */
-.react-flow__edge.edge-nano-image .react-flow__edge-path {
-  stroke: rgb(250, 204, 21);
+/* Grid Layout - blue-500 */
+.react-flow__edge.edge-grid .react-flow__edge-path {
+  stroke: rgb(59, 130, 246);
   stroke-width: 2;
-  filter: drop-shadow(0 0 8px rgba(250, 204, 21, 0.5));
+  filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.5));
 }
 
-/* Gemini Video - blue-400 */
-.react-flow__edge.edge-gemini-video .react-flow__edge-path {
+/* Video - blue-400 */
+.react-flow__edge.edge-video .react-flow__edge-path {
   stroke: rgb(96, 165, 250);
   stroke-width: 2;
   filter: drop-shadow(0 0 8px rgba(96, 165, 250, 0.5));
-}
-
-/* Kling Video - green-400 */
-.react-flow__edge.edge-kling-video .react-flow__edge-path {
-  stroke: rgb(74, 222, 128);
-  stroke-width: 2;
-  filter: drop-shadow(0 0 8px rgba(74, 222, 128, 0.5));
-}
-
-/* Sora Video - orange-500 */
-.react-flow__edge.edge-sora-video .react-flow__edge-path {
-  stroke: rgb(249, 115, 22);
-  stroke-width: 2;
-  filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.5));
 }
 
 /* Default */
@@ -82,42 +68,17 @@ body {
   filter: drop-shadow(0 0 8px rgba(167, 139, 250, 0.5));
 }
 
-.react-flow__controls {
-  background: rgba(15, 20, 26, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 10px 24px rgba(3, 7, 18, 0.35);
-  border-radius: 12px;
-  left: 5rem !important;
-  bottom: 1rem !important;
-  opacity: 0.95;
-  padding: 0.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+
+
+.react-flow {
+  height: 100% !important;
+  background-color: #0b0f14 !important;
 }
 
-.react-flow__controls-button {
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: #94a3b8;
-  width: 32px;
-  height: 32px;
-  transition: all 0.2s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.react-flow__background {
+  background-color: transparent !important;
 }
 
-.react-flow__controls-button:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #e2e8f0;
-}
-
-.react-flow__controls-button svg {
-  max-width: 14px;
-  max-height: 14px;
-}
 
 .react-flow__minimap {
   background: rgba(15, 20, 26, 0.95);

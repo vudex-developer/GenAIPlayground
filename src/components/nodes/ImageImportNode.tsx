@@ -99,7 +99,7 @@ export default function ImageImportNode({
     await loadImageFromStorage()
   }, [loadImageFromStorage])
 
-  const handleFileUpload = async (file: File) => {
+  const handleFileUpload = useCallback(async (file: File) => {
     if (!file.type.startsWith('image/')) return
 
     const url = URL.createObjectURL(file)
@@ -109,28 +109,21 @@ export default function ImageImportNode({
       const img = new Image()
       img.onload = async () => {
         try {
-          // 🔥 IndexedDB + S3에 이미지 저장
           const imageId = `img-import-${Date.now()}-${Math.random().toString(36).substring(7)}`
-          console.log('💾 Image Import: IndexedDB/S3에 저장 시작...', imageId)
-          
           const savedRef = await saveImage(imageId, dataUrl, id, true)
-          console.log('✅ Image Import: 저장 완료', savedRef)
 
-          // idb: 참조로 저장 (localStorage 용량 절약)
           updateNodeData(id, {
             imageUrl: url,
-            imageDataUrl: savedRef, // idb:abc-123 형태
+            imageDataUrl: savedRef,
             fileName: file.name,
             filePath: file.webkitRelativePath || file.name,
             width: img.width,
             height: img.height,
           })
-
-          // 즉시 표시용 DataURL 설정
           setDisplayImageUrl(dataUrl)
+          setLoadFailed(false)
         } catch (error) {
           console.error('❌ Image Import: 저장 실패', error)
-          // 폴백: 직접 DataURL 저장 (비권장)
           updateNodeData(id, {
             imageUrl: url,
             imageDataUrl: dataUrl,
@@ -140,12 +133,37 @@ export default function ImageImportNode({
             height: img.height,
           })
           setDisplayImageUrl(dataUrl)
+          setLoadFailed(false)
         }
       }
       img.src = url
     }
     reader.readAsDataURL(file)
-  }
+  }, [id, updateNodeData])
+
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file && file.type.startsWith('image/')) {
+      void handleFileUpload(file)
+    }
+  }, [handleFileUpload])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }, [])
 
   return (
     <div 
@@ -215,23 +233,23 @@ export default function ImageImportNode({
             )}
           </div>
         ) : loadFailed || (data.fileName && !displayImageUrl) ? (
-          // 로드 실패 또는 이미지 없음 상태
-          <div className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-amber-400/40 bg-[#222d3d]">
-            <button
-              className="flex flex-col items-center gap-2 text-[10px] text-slate-400 hover:text-amber-300 transition"
-              onClick={handleReload}
-            >
-              <RefreshCw className="h-5 w-5 text-amber-400/70" />
-              <div className="font-medium text-amber-400">다시 로드</div>
-            </button>
-            <div 
-              className="text-[9px] text-slate-500 cursor-pointer hover:text-cyan-400 transition"
-              onClick={(e) => {
-                e.stopPropagation()
-                fileInputRef.current?.click()
-              }}
-            >
-              또는 파일 다시 선택
+          <div 
+            className={`flex h-32 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed text-[10px] text-slate-400 cursor-pointer transition ${
+              isDragOver
+                ? 'border-cyan-400 bg-cyan-400/10'
+                : 'border-amber-400/40 bg-[#222d3d] hover:border-amber-400/60 hover:bg-[#2a3544]'
+            }`}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onClick={(e) => {
+              e.stopPropagation()
+              fileInputRef.current?.click()
+            }}
+          >
+            <Upload className={`h-5 w-5 ${isDragOver ? 'text-cyan-400' : 'text-amber-400/70'}`} />
+            <div className="font-medium text-amber-400">
+              {isDragOver ? '여기에 놓기' : '클릭 또는 드래그'}
             </div>
             {data.fileName && (
               <div className="text-[8px] text-slate-600 px-2 text-center truncate w-full">
@@ -239,31 +257,23 @@ export default function ImageImportNode({
               </div>
             )}
           </div>
-        ) : data.fileName ? (
-          // 이미지는 삭제되었지만 파일 이름이 남아있는 경우
-          <div 
-            className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-yellow-400/30 bg-[#222d3d] text-[10px] text-slate-400 cursor-pointer hover:border-yellow-400/50 hover:bg-[#2a3544] transition"
-            onClick={(e) => {
-              e.stopPropagation()
-              fileInputRef.current?.click()
-            }}
-          >
-            <Upload className="h-5 w-5 text-yellow-400/60" />
-            <div className="font-medium text-yellow-400">이미지 다시 업로드</div>
-            <div className="text-[9px] text-slate-500 px-2 text-center truncate w-full">
-              {data.fileName}
-            </div>
-          </div>
         ) : (
           <div 
-            className="flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-cyan-400/30 bg-[#222d3d] text-[10px] text-slate-400 cursor-pointer hover:border-cyan-400/50 hover:bg-[#2a3544] transition"
+            className={`flex h-32 flex-col items-center justify-center gap-2 rounded-md border border-dashed text-[10px] text-slate-400 cursor-pointer transition ${
+              isDragOver
+                ? 'border-cyan-400 bg-cyan-400/10'
+                : 'border-cyan-400/30 bg-[#222d3d] hover:border-cyan-400/50 hover:bg-[#2a3544]'
+            }`}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
             onClick={(e) => {
               e.stopPropagation()
               fileInputRef.current?.click()
             }}
           >
-            <Upload className="h-5 w-5 text-cyan-400/60" />
-            <div className="font-medium">Click to upload</div>
+            <Upload className={`h-5 w-5 ${isDragOver ? 'text-cyan-400' : 'text-cyan-400/60'}`} />
+            <div className="font-medium">{isDragOver ? '여기에 놓기' : '클릭 또는 드래그'}</div>
           </div>
         )}
       </div>
@@ -271,12 +281,14 @@ export default function ImageImportNode({
       <Handle
         type="target"
         position={Position.Left}
-        className="!h-3 !w-3 !bg-cyan-500"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
+        title="Prompt Input"
       />
       <Handle
         type="source"
         position={Position.Right}
-        className="!h-3 !w-3 !bg-cyan-500"
+        className="!h-[7px] !w-[7px] !bg-yellow-500"
+        title="Image Output"
       />
     </div>
   )

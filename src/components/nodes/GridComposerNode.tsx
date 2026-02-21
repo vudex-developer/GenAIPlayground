@@ -264,6 +264,7 @@ const GridComposerNode = ({ data, selected }: NodeProps<GridComposerNodeData>) =
         position={Position.Left}
         id="grid-layout"
         style={{ top: '30%', background: '#3b82f6' }}
+        className="!h-[7px] !w-[7px]"
         title="Grid Layout (from Grid Node)"
       />
 
@@ -280,8 +281,9 @@ const GridComposerNode = ({ data, selected }: NodeProps<GridComposerNodeData>) =
             id={`input-${slot.id}`}
             style={{ 
               top: `${handlePosition}%`,
-              background: data.inputImages[slot.id] ? '#10b981' : '#64748b'
+              background: data.inputImages[slot.id] ? '#eab308' : '#64748b'
             }}
+            className="!h-[7px] !w-[7px]"
             title={`${slot.id}: ${slot.label}`}
           />
         )
@@ -294,8 +296,9 @@ const GridComposerNode = ({ data, selected }: NodeProps<GridComposerNodeData>) =
         id="composed-grid"
         style={{ 
           top: '50%',
-          background: isComposed ? '#10b981' : '#64748b'
+          background: isComposed ? '#eab308' : '#64748b'
         }}
+        className="!h-[7px] !w-[7px]"
         title="Composed Grid Image"
       />
     </div>

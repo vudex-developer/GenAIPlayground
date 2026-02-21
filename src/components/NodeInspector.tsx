@@ -3,7 +3,7 @@ import { useFlowStore } from '../stores/flowStore'
 import { useIMEInput } from '../hooks/useIMEInput'
 import { GeminiAPIClient, MockGeminiAPI } from '../services/geminiAPI'
 import { getImage, saveImage } from '../utils/indexedDB'
-import { X } from 'lucide-react'
+import { X, Upload } from 'lucide-react'
 import CameraPreview3D from './CameraPreview3D'
 import { getCharacterPresets, getStoryboardPresets, applyPreset } from '../utils/gridPresets'
 import type { GridPreset } from '../types/nodes'
@@ -11,17 +11,16 @@ import type {
   TextPromptNodeData,
   MotionPromptNodeData,
   ImageImportNodeData,
-  NanoImageNodeData,
-  GeminiVideoNodeData,
-  KlingVideoNodeData,
+  GenImageNodeData,
+  MovieNodeData,
   GridNodeData,
   CellRegeneratorNodeData,
   GridComposerNodeData,
   GridSlot,
   GridLayout,
-  NanoImageModel,
-  NanoImageResolution,
-  SoraVideoNodeData,
+  GenImageModel,
+  GenImageResolution,
+  ImageProvider,
 } from '../types/nodes'
 
 const NodeInspector = () => {
@@ -83,14 +82,10 @@ const NodeInspector = () => {
         return <MotionPromptSettings node={selectedNode} updateNodeData={updateNodeData} />
       case 'imageImport':
         return <ImageImportSettings node={selectedNode} updateNodeData={updateNodeData} />
-      case 'nanoImage':
-        return <NanoImageSettings node={selectedNode} updateNodeData={updateNodeData} />
-      case 'geminiVideo':
-        return <GeminiVideoSettings node={selectedNode} updateNodeData={updateNodeData} />
-      case 'klingVideo':
-        return <KlingVideoSettings node={selectedNode} updateNodeData={updateNodeData} />
-      case 'soraVideo':
-        return <SoraVideoSettings node={selectedNode} updateNodeData={updateNodeData} />
+      case 'genImage':
+        return <GenImageSettings node={selectedNode} updateNodeData={updateNodeData} />
+      case 'movie':
+        return <MovieSettings node={selectedNode} updateNodeData={updateNodeData} />
       case 'gridNode':
         return <GridNodeSettings node={selectedNode} updateNodeData={updateNodeData} />
       case 'cellRegenerator':
@@ -961,6 +956,17 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
   }
 
   const hasImageRef = !!(data.imageDataUrl || data.imageUrl)
+  const [isDragOver, setIsDragOver] = React.useState(false)
+
+  const handleDrop = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file && file.type.startsWith('image/')) {
+      void handleFileUpload(file)
+    }
+  }, [handleFileUpload])
 
   return (
     <div className="space-y-4">
@@ -1042,77 +1048,108 @@ const ImageImportSettings = ({ node, updateNodeData }: any) => {
           </button>
         </>
       ) : (loadFailed || !displayUrl) && hasImageRef ? (
-        <>
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-400">
-            이미지를 불러올 수 없습니다
-            {data.fileName && (
-              <div className="mt-1 text-xs text-amber-400/80">
-                파일: {data.fileName}
-              </div>
-            )}
-          </div>
-
-          <button
-            onClick={() => loadImageForDisplay()}
-            className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-400 transition hover:bg-cyan-500/20"
-          >
-            다시 로드
-          </button>
-
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
-          >
-            파일 다시 선택
-          </button>
-        </>
-      ) : data.fileName ? (
-        <>
-          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-400">
-            이미지가 자동 정리되었습니다
-            <div className="mt-1 text-xs text-yellow-400/80">
-              파일: {data.fileName}
+        <div
+          className={`rounded-lg border-2 border-dashed p-4 text-center transition ${
+            isDragOver
+              ? 'border-cyan-400 bg-cyan-400/10'
+              : 'border-amber-500/30 bg-amber-500/5'
+          }`}
+          onDrop={handleDrop}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+          onDragLeave={() => setIsDragOver(false)}
+        >
+          {isDragOver ? (
+            <div className="py-6 text-cyan-400">
+              <Upload className="mx-auto mb-2 h-8 w-8" />
+              <div className="text-sm font-medium">여기에 놓기</div>
             </div>
-          </div>
-
-          <button
-            onClick={async () => {
-              // IndexedDB에서 nodeId로 복구 시도
-              await loadImageForDisplay()
-            }}
-            className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-400 transition hover:bg-cyan-500/20"
-          >
-            IndexedDB에서 복구 시도
-          </button>
-          
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
-          >
-            파일 다시 선택
-          </button>
-        </>
+          ) : (
+            <>
+              <div className="mb-3 text-sm text-amber-400">이미지를 불러올 수 없습니다</div>
+              <div className="mb-3 text-xs text-slate-400">
+                이미지를 여기로 드래그하거나 버튼을 클릭하세요
+              </div>
+              {data.fileName && (
+                <div className="mb-3 rounded bg-white/5 px-2 py-1 text-xs text-slate-500">
+                  {data.fileName}
+                </div>
+              )}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
+              >
+                파일 선택
+              </button>
+            </>
+          )}
+        </div>
+      ) : data.fileName ? (
+        <div
+          className={`rounded-lg border-2 border-dashed p-4 text-center transition ${
+            isDragOver
+              ? 'border-cyan-400 bg-cyan-400/10'
+              : 'border-yellow-500/30 bg-yellow-500/5'
+          }`}
+          onDrop={handleDrop}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+          onDragLeave={() => setIsDragOver(false)}
+        >
+          {isDragOver ? (
+            <div className="py-6 text-cyan-400">
+              <Upload className="mx-auto mb-2 h-8 w-8" />
+              <div className="text-sm font-medium">여기에 놓기</div>
+            </div>
+          ) : (
+            <>
+              <div className="mb-2 text-sm text-yellow-400">이미지가 정리되었습니다</div>
+              <div className="mb-3 rounded bg-white/5 px-2 py-1 text-xs text-slate-500">
+                {data.fileName}
+              </div>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
+              >
+                파일 선택
+              </button>
+            </>
+          )}
+        </div>
       ) : (
-        <>
-          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-400">
-            No image selected
-          </div>
-          
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
-          >
-            Upload Image
-          </button>
-        </>
+        <div
+          className={`rounded-lg border-2 border-dashed p-4 text-center transition ${
+            isDragOver
+              ? 'border-cyan-400 bg-cyan-400/10'
+              : 'border-white/10 bg-white/5'
+          }`}
+          onDrop={handleDrop}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+          onDragLeave={() => setIsDragOver(false)}
+        >
+          {isDragOver ? (
+            <div className="py-6 text-cyan-400">
+              <Upload className="mx-auto mb-2 h-8 w-8" />
+              <div className="text-sm font-medium">여기에 놓기</div>
+            </div>
+          ) : (
+            <>
+              <div className="mb-3 text-sm text-slate-400">이미지를 드래그하거나 선택하세요</div>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-400 transition hover:bg-blue-500/20"
+              >
+                파일 선택
+              </button>
+            </>
+          )}
+        </div>
       )}
     </div>
   )
 }
 
-const NanoImageSettings = ({ node, updateNodeData }: any) => {
-  const data = node.data as NanoImageNodeData
-  const runNanoImageNode = useFlowStore((state) => state.runNanoImageNode)
+const GenImageSettings = ({ node, updateNodeData }: any) => {
+  const data = node.data as GenImageNodeData
+  const runGenImageNode = useFlowStore((state) => state.runGenImageNode)
   const cancelNodeExecution = useFlowStore((state) => state.cancelNodeExecution)
   const [displayImageUrl, setDisplayImageUrl] = useState<string | undefined>(
     data.outputImageUrl
@@ -1227,14 +1264,26 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
   return (
     <div className="space-y-4">
       <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Provider</label>
+        <select
+          value={data.provider || 'nanoBanana'}
+          onChange={(e) => updateNodeData(node.id, { provider: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="nanoBanana">🍌 Nano Banana (Gemini)</option>
+        </select>
+        <div className="mt-1 text-[10px] text-slate-500">추후 DALL·E, Flux 등 추가 예정</div>
+      </div>
+
+      <div>
         <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
         <select
           value={data.model}
           onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
-          <option value="gemini-3-pro-image-preview">Nano Banana Pro</option>
-          <option value="gemini-2.5-flash-image">Nano Banana (Flash)</option>
+          <option value="gemini-3-pro-image-preview">Gemini Pro (High Quality)</option>
+          <option value="gemini-2.5-flash-image">Gemini Flash (Fast)</option>
         </select>
       </div>
 
@@ -1361,7 +1410,7 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
                 <div>
                   <div className="text-xs text-slate-400 mb-1">Model</div>
                   <div className="text-xs font-medium text-slate-200">
-                    {displayModel === 'gemini-3-pro-image-preview' ? 'Nano Banana Pro' : 'Nano Banana Flash'}
+                    {displayModel === 'gemini-3-pro-image-preview' ? 'Gemini Pro' : 'Gemini Flash'}
                   </div>
                 </div>
                 
@@ -1426,7 +1475,7 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
           </button>
         ) : (
           <button
-            onClick={() => void runNanoImageNode(node.id)}
+            onClick={() => void runGenImageNode(node.id)}
             className="flex-1 rounded-lg bg-emerald-500/20 px-3 py-2 text-sm font-medium text-emerald-400 transition hover:bg-emerald-500/30"
           >
             Generate
@@ -1450,9 +1499,56 @@ const NanoImageSettings = ({ node, updateNodeData }: any) => {
   )
 }
 
-const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
-  const data = node.data as GeminiVideoNodeData
-  const runGeminiNode = useFlowStore((state) => state.runGeminiNode)
+const MovieSettings = ({ node, updateNodeData }: any) => {
+  const data = node.data as MovieNodeData
+  const provider = data.provider || 'veo'
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Provider</label>
+        <select
+          value={provider}
+          onChange={(e) => updateNodeData(node.id, { provider: e.target.value })}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+        >
+          <option value="veo">🎬 Veo (Google)</option>
+          <option value="kling">🎥 Kling</option>
+          <option value="sora">🎞️ Sora (OpenAI)</option>
+        </select>
+      </div>
+
+      {provider === 'veo' && (
+        <GeminiVideoSettings node={node} updateNodeData={updateNodeData} movieData={data} />
+      )}
+      {provider === 'kling' && (
+        <KlingVideoSettings node={node} updateNodeData={updateNodeData} movieData={data} />
+      )}
+      {provider === 'sora' && (
+        <SoraVideoSettings node={node} updateNodeData={updateNodeData} movieData={data} />
+      )}
+    </div>
+  )
+}
+
+const GeminiVideoSettings = ({ node, updateNodeData, movieData }: any) => {
+  const raw = movieData || node.data
+  const data = {
+    ...raw,
+    model: raw.veoModel || raw.model,
+    duration: raw.veoDuration || raw.duration,
+    motionIntensity: raw.veoMotionIntensity || raw.motionIntensity,
+    quality: raw.veoQuality || raw.quality,
+  }
+  const updateVeo = (patch: any) => {
+    const mapped: any = {}
+    if ('model' in patch) mapped.veoModel = patch.model
+    if ('duration' in patch) mapped.veoDuration = patch.duration
+    if ('motionIntensity' in patch) mapped.veoMotionIntensity = patch.motionIntensity
+    if ('quality' in patch) mapped.veoQuality = patch.quality
+    updateNodeData(node.id, Object.keys(mapped).length > 0 ? mapped : patch)
+  }
+  const runMovieNode = useFlowStore((state) => state.runMovieNode)
   const cancelNodeExecution = useFlowStore((state) => state.cancelNodeExecution)
 
   const getStatusText = (status: string) => {
@@ -1481,7 +1577,7 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
         <select
           value={data.model}
-          onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
+          onChange={(e) => updateVeo({ model: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="veo-3.1-generate-preview">Veo 3.1 (Preview)</option>
@@ -1497,7 +1593,7 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Duration</label>
         <select
           value={data.duration}
-          onChange={(e) => updateNodeData(node.id, { duration: Number(e.target.value) })}
+          onChange={(e) => updateVeo({ duration: Number(e.target.value) })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="5">5 seconds</option>
@@ -1512,7 +1608,7 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Quality</label>
         <select
           value={data.quality}
-          onChange={(e) => updateNodeData(node.id, { quality: e.target.value })}
+          onChange={(e) => updateVeo({ quality: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="standard">Standard</option>
@@ -1524,7 +1620,7 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Motion Intensity</label>
         <select
           value={data.motionIntensity}
-          onChange={(e) => updateNodeData(node.id, { motionIntensity: e.target.value })}
+          onChange={(e) => updateVeo({ motionIntensity: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="low">Low</option>
@@ -1580,7 +1676,7 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
           </button>
         ) : (
           <button
-            onClick={() => void runGeminiNode(node.id)}
+            onClick={() => void runMovieNode(node.id)}
             className="flex-1 rounded-lg bg-blue-500/20 px-3 py-2 text-sm font-medium text-blue-400 transition hover:bg-blue-500/30"
           >
             Generate
@@ -1591,7 +1687,7 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
             onClick={() => {
               const link = document.createElement('a')
               link.href = data.outputVideoUrl!
-              link.download = 'gemini-video.mp4'
+              link.download = 'movie-veo.mp4'
               link.click()
             }}
             className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10"
@@ -1604,9 +1700,34 @@ const GeminiVideoSettings = ({ node, updateNodeData }: any) => {
   )
 }
 
-const KlingVideoSettings = ({ node, updateNodeData }: any) => {
-  const data = node.data as KlingVideoNodeData
-  const runKlingNode = useFlowStore((state) => state.runKlingNode)
+const KlingVideoSettings = ({ node, updateNodeData, movieData }: any) => {
+  const raw = movieData || node.data
+  const data = {
+    ...raw,
+    model: raw.klingModel || raw.model,
+    duration: raw.klingDuration || raw.duration,
+    aspectRatio: raw.klingAspectRatio || raw.aspectRatio,
+    enableMotionControl: raw.klingEnableMotionControl ?? raw.enableMotionControl ?? false,
+    cameraControl: raw.klingCameraControl || raw.cameraControl || 'none',
+    motionValue: raw.klingMotionValue ?? raw.motionValue ?? 0,
+    endImageUrl: raw.klingEndImageUrl || raw.endImageUrl,
+    endImageDataUrl: raw.klingEndImageDataUrl || raw.endImageDataUrl,
+    taskId: raw.klingTaskId || raw.taskId,
+  }
+  const updateKling = (patch: any) => {
+    const mapped: any = {}
+    if ('model' in patch) mapped.klingModel = patch.model
+    if ('duration' in patch) mapped.klingDuration = patch.duration
+    if ('aspectRatio' in patch) mapped.klingAspectRatio = patch.aspectRatio
+    if ('enableMotionControl' in patch) mapped.klingEnableMotionControl = patch.enableMotionControl
+    if ('cameraControl' in patch) mapped.klingCameraControl = patch.cameraControl
+    if ('motionValue' in patch) mapped.klingMotionValue = patch.motionValue
+    if ('endImageUrl' in patch) mapped.klingEndImageUrl = patch.endImageUrl
+    if ('endImageDataUrl' in patch) mapped.klingEndImageDataUrl = patch.endImageDataUrl
+    if ('taskId' in patch) mapped.klingTaskId = patch.taskId
+    updateNodeData(node.id, Object.keys(mapped).length > 0 ? mapped : patch)
+  }
+  const runMovieNode = useFlowStore((state) => state.runMovieNode)
   const cancelNodeExecution = useFlowStore((state) => state.cancelNodeExecution)
 
   const getStatusText = (status: string) => {
@@ -1635,7 +1756,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
         <select
           value={data.model}
-          onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
+          onChange={(e) => updateKling({ model: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="kling-v1-5">Kling 1.5</option>
@@ -1651,7 +1772,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Duration</label>
         <select
           value={data.duration}
-          onChange={(e) => updateNodeData(node.id, { duration: Number(e.target.value) })}
+          onChange={(e) => updateKling({ duration: Number(e.target.value) })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="5">5 seconds</option>
@@ -1663,7 +1784,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Aspect Ratio</label>
         <select
           value={data.aspectRatio}
-          onChange={(e) => updateNodeData(node.id, { aspectRatio: e.target.value })}
+          onChange={(e) => updateKling({ aspectRatio: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="16:9">16:9 (Landscape)</option>
@@ -1677,7 +1798,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
           <input
             type="checkbox"
             checked={data.enableMotionControl}
-            onChange={(e) => updateNodeData(node.id, { enableMotionControl: e.target.checked })}
+            onChange={(e) => updateKling({ enableMotionControl: e.target.checked })}
             className="rounded border-white/20 bg-white/5 text-blue-500 focus:ring-blue-500/50"
           />
           Camera Control
@@ -1687,7 +1808,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
           <div className="mt-2 space-y-3 rounded-lg border border-white/10 bg-white/5 p-3">
             <select
               value={data.cameraControl}
-              onChange={(e) => updateNodeData(node.id, { cameraControl: e.target.value })}
+              onChange={(e) => updateKling({ cameraControl: e.target.value })}
               className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
             >
               <option value="none">None</option>
@@ -1707,7 +1828,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
                   min="-10"
                   max="10"
                   value={data.motionValue}
-                  onChange={(e) => updateNodeData(node.id, { motionValue: Number(e.target.value) })}
+                  onChange={(e) => updateKling({ motionValue: Number(e.target.value) })}
                   className="w-full"
                 />
                 <div className="mt-1 flex justify-between text-xs text-slate-500">
@@ -1768,7 +1889,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
           </button>
         ) : (
           <button
-            onClick={() => void runKlingNode(node.id)}
+            onClick={() => void runMovieNode(node.id)}
             className="flex-1 rounded-lg bg-green-500/20 px-3 py-2 text-sm font-medium text-green-400 transition hover:bg-green-500/30"
           >
             Generate
@@ -1779,7 +1900,7 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
             onClick={() => {
               const link = document.createElement('a')
               link.href = data.outputVideoUrl!
-              link.download = 'kling-video.mp4'
+              link.download = 'movie-kling.mp4'
               link.click()
             }}
             className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10"
@@ -1792,9 +1913,24 @@ const KlingVideoSettings = ({ node, updateNodeData }: any) => {
   )
 }
 
-const SoraVideoSettings = ({ node, updateNodeData }: any) => {
-  const data = node.data as SoraVideoNodeData
-  const runSoraNode = useFlowStore((state) => state.runSoraNode)
+const SoraVideoSettings = ({ node, updateNodeData, movieData }: any) => {
+  const raw = movieData || node.data
+  const data = {
+    ...raw,
+    model: raw.soraModel || raw.model,
+    duration: raw.soraDuration || raw.duration,
+    resolution: raw.soraResolution || raw.resolution,
+    videoId: raw.soraVideoId || raw.videoId,
+  }
+  const updateSora = (patch: any) => {
+    const mapped: any = {}
+    if ('model' in patch) mapped.soraModel = patch.model
+    if ('duration' in patch) mapped.soraDuration = patch.duration
+    if ('resolution' in patch) mapped.soraResolution = patch.resolution
+    if ('videoId' in patch) mapped.soraVideoId = patch.videoId
+    updateNodeData(node.id, Object.keys(mapped).length > 0 ? mapped : patch)
+  }
+  const runMovieNode = useFlowStore((state) => state.runMovieNode)
   const cancelNodeExecution = useFlowStore((state) => state.cancelNodeExecution)
 
   const getStatusText = (status: string) => {
@@ -1817,7 +1953,7 @@ const SoraVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Model</label>
         <select
           value={data.model}
-          onChange={(e) => updateNodeData(node.id, { model: e.target.value })}
+          onChange={(e) => updateSora({ model: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="sora-2">Sora 2 (Fast)</option>
@@ -1830,7 +1966,7 @@ const SoraVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Duration</label>
         <select
           value={data.duration}
-          onChange={(e) => updateNodeData(node.id, { duration: Number(e.target.value) })}
+          onChange={(e) => updateSora({ duration: Number(e.target.value) })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="4">4 seconds</option>
@@ -1843,7 +1979,7 @@ const SoraVideoSettings = ({ node, updateNodeData }: any) => {
         <label className="mb-2 block text-sm font-medium text-slate-300">Resolution</label>
         <select
           value={data.resolution}
-          onChange={(e) => updateNodeData(node.id, { resolution: e.target.value })}
+          onChange={(e) => updateSora({ resolution: e.target.value })}
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
         >
           <option value="1280x720">1280x720 (Landscape)</option>
@@ -1900,7 +2036,7 @@ const SoraVideoSettings = ({ node, updateNodeData }: any) => {
           </button>
         ) : (
           <button
-            onClick={() => void runSoraNode(node.id)}
+            onClick={() => void runMovieNode(node.id)}
             className="flex-1 rounded-lg bg-orange-500/20 px-3 py-2 text-sm font-medium text-orange-400 transition hover:bg-orange-500/30"
           >
             Generate
@@ -1911,7 +2047,7 @@ const SoraVideoSettings = ({ node, updateNodeData }: any) => {
             onClick={() => {
               const link = document.createElement('a')
               link.href = data.outputVideoUrl!
-              link.download = 'sora-video.mp4'
+              link.download = 'movie-sora.mp4'
               link.click()
             }}
             className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10"
@@ -2041,7 +2177,12 @@ const CharacterSetupSettings = ({ node, updateNodeData }: any) => {
                 newSlots = newSlots.slice(0, requiredSlots)
               }
               
-              updateNodeData(node.id, { ...data, gridLayout: newLayout, slots: newSlots })
+              const validSlotIds = new Set(newSlots.map(s => s.id))
+              const cleanedPrompts: { [key: string]: string } = {}
+              for (const [k, v] of Object.entries(data.generatedPrompts || {})) {
+                if (validSlotIds.has(k)) cleanedPrompts[k] = v
+              }
+              updateNodeData(node.id, { ...data, gridLayout: newLayout, slots: newSlots, generatedPrompts: cleanedPrompts })
             }}
             className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-violet-500/50 focus:outline-none focus:ring-1 focus:ring-violet-500/50"
           >
@@ -2341,7 +2482,12 @@ const StoryboardSettings = ({ node, updateNodeData }: any) => {
                 newSlots = newSlots.slice(0, requiredSlots)
               }
               
-              updateNodeData(node.id, { ...data, gridLayout: newLayout, slots: newSlots })
+              const validSlotIds = new Set(newSlots.map(s => s.id))
+              const cleanedPrompts: { [key: string]: string } = {}
+              for (const [k, v] of Object.entries(data.generatedPrompts || {})) {
+                if (validSlotIds.has(k)) cleanedPrompts[k] = v
+              }
+              updateNodeData(node.id, { ...data, gridLayout: newLayout, slots: newSlots, generatedPrompts: cleanedPrompts })
             }}
             className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
           >
@@ -2957,7 +3103,7 @@ Purpose: ${currentData.mode === 'character' ? 'Fast preview of multiple camera a
 - If you were given a high-quality reference image, MATCH that quality level`
     }
     
-    // Store the unified prompt in ALL slots (since Grid Node outputs go to one Nano Banana)
+    // Store the unified prompt in ALL slots (since Grid Node outputs go to one Gen Image)
     const newPrompts: { [key: string]: string } = {}
     currentData.slots.forEach((slot) => {
       newPrompts[slot.id] = unifiedPrompt
@@ -3399,7 +3545,7 @@ Purpose: ${currentData.mode === 'character' ? 'Fast preview of multiple camera a
           </details>
           
           <div className="text-xs text-slate-500 bg-slate-900/50 border border-white/10 rounded p-2">
-            💡 <strong>통합 프롬프트</strong>가 생성되었습니다. Grid Node → Nano Banana 연결 시 <strong>한 번에 {data.slots.length}개 셀 그리드</strong>를 생성합니다.
+            💡 <strong>통합 프롬프트</strong>가 생성되었습니다. Grid Node → Gen Image 연결 시 <strong>한 번에 {data.slots.length}개 셀 그리드</strong>를 생성합니다.
           </div>
           
           <button
@@ -3478,8 +3624,8 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
       let imageUrl: string | undefined
       let imageDataUrl: string | undefined
 
-      if (connectedImageNode.type === 'nanoImage') {
-        const nanoData = connectedImageNode.data as NanoImageNodeData
+      if (connectedImageNode.type === 'genImage') {
+        const nanoData = connectedImageNode.data as GenImageNodeData
         imageUrl = nanoData.outputImageUrl
         imageDataUrl = nanoData.outputImageDataUrl
       } else if (connectedImageNode.type === 'imageImport') {
@@ -3548,7 +3694,7 @@ const CellRegeneratorSettings = ({ node, updateNodeData }: any) => {
 
       {/* Info Box */}
       <div className="rounded border border-purple-400/20 bg-purple-500/5 px-3 py-2 text-xs text-purple-300">
-        💡 이 노드는 그리드 이미지를 개별 셀로 분리합니다. 각 셀은 Nano Banana와 연결하여 고화질로 재생성할 수 있습니다.
+        💡 이 노드는 그리드 이미지를 개별 셀로 분리합니다. 각 셀은 Gen Image와 연결하여 고화질로 재생성할 수 있습니다.
       </div>
 
       {/* Model Selection */}
@@ -3770,8 +3916,8 @@ const GridComposerSettings = ({ node, updateNodeData }: any) => {
         if (sourceNode) {
           let imageUrl: string | undefined
 
-          if (sourceNode.type === 'nanoImage') {
-            const nanoData = sourceNode.data as NanoImageNodeData
+          if (sourceNode.type === 'genImage') {
+            const nanoData = sourceNode.data as GenImageNodeData
             imageUrl = nanoData.outputImageUrl || nanoData.outputImageDataUrl
           } else if (sourceNode.type === 'imageImport') {
             const importData = sourceNode.data as ImageImportNodeData
@@ -4525,7 +4671,7 @@ const LLMPromptSettings = ({ node, updateNodeData }: any) => {
         return e.target === node.id && e.targetHandle === 'image' && sourceNode?.type === 'gridComposer'
       }) && (
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300">🎯 참조 정확도 (Nano Banana 생성용)</label>
+          <label className="mb-2 block text-sm font-medium text-slate-300">🎯 참조 정확도 (Gen Image 생성용)</label>
           <select
             value={data.referenceMode || 'exact'}
             onChange={(e) => updateNodeData(node.id, { referenceMode: e.target.value } as any)}

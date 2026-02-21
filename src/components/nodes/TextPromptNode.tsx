@@ -43,7 +43,7 @@ export default function TextPromptNode({
         type="source"
         position={Position.Right}
         id="output"
-        className="!h-4 !w-4 !bg-violet-500"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
         title="Prompt Output"
       />
     </div>

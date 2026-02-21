@@ -233,13 +233,15 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
         position={Position.Left}
         id="grid-layout"
         style={{ top: '30%', background: '#3b82f6' }}
+        className="!h-[7px] !w-[7px]"
         title="Grid Layout (from Grid Node)"
       />
       <Handle
         type="target"
         position={Position.Left}
         id="grid-image"
-        style={{ top: '70%', background: '#a855f7' }}
+        style={{ top: '70%', background: '#eab308' }}
+        className="!h-[7px] !w-[7px]"
         title="Labeled Grid Image"
       />
 
@@ -257,8 +259,9 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
               id={slot.id}
               style={{ 
                 top: `${handlePosition * 100}%`,
-                background: data.regeneratedImages[slot.id] ? '#10b981' : '#64748b'
+                background: data.regeneratedImages[slot.id] ? '#eab308' : '#64748b'
               }}
+              className="!h-[7px] !w-[7px]"
               title={`${slot.id}: ${slot.label || 'Empty'}`}
             />
           )
@@ -269,6 +272,7 @@ const CellRegeneratorNode = ({ data, selected }: NodeProps<CellRegeneratorNodeDa
           position={Position.Right}
           id="output"
           style={{ top: '50%', background: '#64748b' }}
+          className="!h-[7px] !w-[7px]"
           title="Connect grid-layout and grid-image first"
         />
       )}

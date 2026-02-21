@@ -39,14 +39,14 @@ export default function MotionPromptNode({
         type="target"
         position={Position.Left}
         id="basePrompt"
-        className="!h-3 !w-3 !bg-violet-400"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
         title="Base Prompt Input"
       />
       <Handle
         type="source"
         position={Position.Right}
         id="output"
-        className="!h-3 !w-3 !bg-fuchsia-500"
+        className="!h-[7px] !w-[7px] !bg-fuchsia-500"
         title="Motion Prompt Output"
       />
     </div>

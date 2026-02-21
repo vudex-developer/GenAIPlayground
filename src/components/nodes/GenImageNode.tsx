@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
-import { Banana, Loader2 } from 'lucide-react'
+import { ImageIcon, Loader2 } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
 import { getImage } from '../../utils/indexedDB'
-import type { NanoImageNodeData } from '../../types/nodes'
+import type { GenImageNodeData } from '../../types/nodes'
 
-export default function NanoImageNode({
+const PROVIDER_COLORS: Record<string, { border: string; ring: string; accent: string }> = {
+  nanoBanana: { border: 'border-yellow-400', ring: 'ring-yellow-400/30 shadow-yellow-400/20', accent: 'text-yellow-400' },
+}
+
+export default function GenImageNode({
   id,
   data,
   selected,
-}: NodeProps<NanoImageNodeData>) {
+}: NodeProps<GenImageNodeData>) {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
   const updateNodeData = useFlowStore((state) => state.updateNodeData)
   const openImageModal = useFlowStore((state) => state.openImageModal)
@@ -17,7 +21,8 @@ export default function NanoImageNode({
     data.outputImageUrl
   )
 
-  // 🔄 IndexedDB/S3에서 이미지 복원
+  const colors = PROVIDER_COLORS[data.provider || 'nanoBanana'] || PROVIDER_COLORS.nanoBanana
+
   useEffect(() => {
     const loadImage = async () => {
       if (!data.outputImageUrl) {
@@ -25,19 +30,15 @@ export default function NanoImageNode({
         return
       }
 
-      // idb: 또는 s3: 참조인 경우
       if (
         typeof data.outputImageUrl === 'string' &&
         (data.outputImageUrl.startsWith('idb:') || data.outputImageUrl.startsWith('s3:'))
       ) {
         try {
-          console.log(`🔄 이미지 로드 시도: ${data.outputImageUrl}`)
           const dataURL = await getImage(data.outputImageUrl)
           if (dataURL) {
-            console.log(`✅ 이미지 로드 성공`)
             setDisplayImageUrl(dataURL)
           } else {
-            console.warn(`⚠️ 이미지 로드 실패: ${data.outputImageUrl}`)
             setDisplayImageUrl(undefined)
           }
         } catch (error) {
@@ -45,7 +46,6 @@ export default function NanoImageNode({
           setDisplayImageUrl(undefined)
         }
       } else {
-        // 일반 DataURL 또는 HTTP URL
         setDisplayImageUrl(data.outputImageUrl)
       }
     }
@@ -56,14 +56,14 @@ export default function NanoImageNode({
   return (
     <div 
       className={`node-card w-48 rounded-xl border bg-[#1c2431] shadow-sm transition-all cursor-pointer ${
-        selected ? 'border-yellow-400 border-2 ring-4 ring-yellow-400/30 shadow-lg shadow-yellow-400/20' : 'border-yellow-400/40'
+        selected ? `${colors.border} border-2 ring-4 ${colors.ring} shadow-lg` : `${colors.border}/40`
       }`}
       onClick={() => setSelectedNodeId(id)}
     >
-      <div className="rounded-t-xl border-b border-yellow-400/20 bg-[#1c2431] px-3 py-2 text-[11px] font-semibold text-slate-100">
+      <div className={`rounded-t-xl border-b ${colors.border}/20 bg-[#1c2431] px-3 py-2 text-[11px] font-semibold text-slate-100`}>
         <div className="flex items-center gap-2">
-          <Banana className="h-4 w-4 text-yellow-400" />
-          Nano Banana
+          <ImageIcon className={`h-4 w-4 ${colors.accent}`} />
+          Gen Image
         </div>
       </div>
 
@@ -78,8 +78,7 @@ export default function NanoImageNode({
                 e.stopPropagation()
                 openImageModal(displayImageUrl || '')
               }}
-              onError={(e) => {
-                console.error('❌ 이미지 로드 에러:', displayImageUrl)
+              onError={() => {
                 setDisplayImageUrl(undefined)
               }}
               title="더블클릭하여 크게 보기"
@@ -101,20 +100,18 @@ export default function NanoImageNode({
         )}
       </div>
 
-      {/* Prompt input handle */}
       <Handle
         type="target"
         position={Position.Left}
         id="prompt"
         style={{ top: '20%' }}
-        className="!h-3 !w-3 !bg-violet-400"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
         title="Prompt"
       />
       
-      {/* Reference image input handles */}
       {Array.from({ length: data.maxReferences || 3 }).map((_, index) => {
         const refNum = index + 1
-        const handlePosition = 30 + (index * 20)  // Distribute evenly
+        const handlePosition = 30 + (index * 20)
         
         return (
           <Handle
@@ -123,26 +120,25 @@ export default function NanoImageNode({
             position={Position.Left}
             id={`ref-${refNum}`}
             style={{ top: `${handlePosition}%` }}
-            className="!h-3 !w-3 !bg-cyan-400"
-            title={`Reference ${refNum}`}
+            className="!h-[7px] !w-[7px] !bg-yellow-500"
+            title={`Reference Image ${refNum}`}
           />
         )
       })}
 
-      {/* Character reference handle */}
       <Handle
         type="target"
         position={Position.Left}
         id="character"
         style={{ top: '90%' }}
-        className="!h-3 !w-3 !bg-pink-400 !border-2 !border-pink-300"
-        title="Character Reference"
+        className="!h-[7px] !w-[7px] !bg-yellow-500 !border-0"
+        title="Character Reference Image"
       />
       
       <Handle
         type="source"
         position={Position.Right}
-        className="!h-3 !w-3 !bg-yellow-500"
+        className="!h-[7px] !w-[7px] !bg-yellow-500"
       />
     </div>
   )

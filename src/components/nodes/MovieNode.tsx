@@ -1,26 +1,47 @@
 import { Handle, Position, type NodeProps } from 'reactflow'
-import { Sparkles, Loader2 } from 'lucide-react'
+import { Film, Loader2 } from 'lucide-react'
 import { useFlowStore } from '../../stores/flowStore'
-import type { GeminiVideoNodeData } from '../../types/nodes'
+import type { MovieNodeData } from '../../types/nodes'
 
-export default function GeminiVideoNode({
+const PROVIDER_LABELS: Record<string, string> = {
+  veo: 'Veo',
+  kling: 'Kling',
+  sora: 'Sora',
+}
+
+const PROVIDER_COLORS: Record<string, { border: string; ring: string; accent: string }> = {
+  veo: { border: 'border-blue-400', ring: 'ring-blue-400/30 shadow-blue-400/20', accent: 'text-blue-400' },
+  kling: { border: 'border-blue-400', ring: 'ring-blue-400/30 shadow-blue-400/20', accent: 'text-blue-400' },
+  sora: { border: 'border-blue-400', ring: 'ring-blue-400/30 shadow-blue-400/20', accent: 'text-blue-400' },
+}
+
+export default function MovieNode({
   id,
   data,
   selected,
-}: NodeProps<GeminiVideoNodeData>) {
+}: NodeProps<MovieNodeData>) {
   const setSelectedNodeId = useFlowStore((state) => state.setSelectedNodeId)
+
+  const provider = data.provider || 'veo'
+  const colors = PROVIDER_COLORS[provider] || PROVIDER_COLORS.veo
+  const label = PROVIDER_LABELS[provider] || 'Veo'
 
   return (
     <div 
       className={`node-card w-56 rounded-xl border bg-[#1c2431] shadow-sm transition-all cursor-pointer ${
-        selected ? 'border-blue-400 border-2 ring-4 ring-blue-400/30 shadow-lg shadow-blue-400/20' : 'border-blue-400/40'
+        selected ? `${colors.border} border-2 ring-4 ${colors.ring} shadow-lg` : `${colors.border}/40`
       }`}
       onClick={() => setSelectedNodeId(id)}
     >
-      <div className="rounded-t-xl border-b border-blue-400/20 bg-[#1c2431] px-3 py-2 text-[11px] font-semibold text-slate-100">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-blue-400" />
-          Gemini Video
+      <div className={`rounded-t-xl border-b ${colors.border}/20 bg-[#1c2431] px-3 py-2 text-[11px] font-semibold text-slate-100`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Film className={`h-4 w-4 ${colors.accent}`} />
+            Movie
+          </div>
+          <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${colors.accent} bg-white/5`}>
+            {label}
+          </span>
         </div>
       </div>
 
@@ -59,20 +80,23 @@ export default function GeminiVideoNode({
         type="target"
         position={Position.Left}
         id="image"
-        className="!h-3 !w-3 !bg-blue-500"
+        className="!h-[7px] !w-[7px] !bg-yellow-500"
         style={{ top: '40%' }}
+        title="Image Input"
       />
       <Handle
         type="target"
         position={Position.Left}
         id="prompt"
-        className="!h-3 !w-3 !bg-blue-500"
+        className="!h-[7px] !w-[7px] !bg-violet-400"
         style={{ top: '60%' }}
+        title="Prompt Input"
       />
       <Handle
         type="source"
         position={Position.Right}
-        className="!h-3 !w-3 !bg-blue-500"
+        className="!h-[7px] !w-[7px] !bg-blue-400"
+        title="Video Output"
       />
     </div>
   )

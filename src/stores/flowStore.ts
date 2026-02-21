@@ -16,15 +16,13 @@ import { getStorageInfo, prepareForStorage, getStorageWarning } from '../utils/s
 import { createBackup } from '../utils/backup'
 import { saveImage, getImage } from '../utils/indexedDB'
 import type {
-  GeminiVideoNodeData,
   GridNodeData,
   ImageImportNodeData,
-  KlingVideoNodeData,
+  MovieNodeData,
   MotionPromptNodeData,
-  NanoImageNodeData,
+  GenImageNodeData,
   NodeData,
   NodeType,
-  SoraVideoNodeData,
   TextPromptNodeData,
   WorkflowEdge,
   WorkflowNode,
@@ -65,8 +63,9 @@ type FlowState = {
   undo: () => void
   redo: () => void
   runWorkflow: () => Promise<void>
+  runMovieNode: (id: string) => Promise<void>
   runGeminiNode: (id: string) => Promise<void>
-  runNanoImageNode: (id: string) => Promise<void>
+  runGenImageNode: (id: string) => Promise<void>
   runKlingNode: (id: string) => Promise<void>
   runSoraNode: (id: string) => Promise<void>
   runLLMPromptNode: (id: string) => Promise<void>
@@ -76,29 +75,32 @@ type FlowState = {
 
 const getEdgeClass = (edge: WorkflowEdge, nodes: WorkflowNode[]) => {
   const sourceNode = nodes.find((node) => node.id === edge.source)
-  switch (sourceNode?.type) {
+  if (!sourceNode) return 'edge-default'
+  const sh = edge.sourceHandle
+
+  // Grid layout connection (blue)
+  if (sh === 'grid-layout') return 'edge-grid'
+
+  // Source determines output type
+  switch (sourceNode.type) {
     case 'textPrompt':
-      return 'edge-text-prompt'
+      return 'edge-prompt'         // violet — prompt output
     case 'motionPrompt':
-      return 'edge-motion-prompt'
+      return 'edge-motion'         // fuchsia — motion prompt output
     case 'imageImport':
-      return 'edge-image-import'
-    case 'nanoImage':
-      return 'edge-nano-image'
-    case 'geminiVideo':
-      return 'edge-gemini-video'
-    case 'klingVideo':
-      return 'edge-kling-video'
-    case 'soraVideo':
-      return 'edge-sora-video'
+      return 'edge-image'          // yellow — image output
+    case 'genImage':
+      return 'edge-image'          // yellow — image output
+    case 'movie':
+      return 'edge-video'          // blue — video output
     case 'gridNode':
-      return 'edge-text-prompt' // Use violet color
+      return 'edge-prompt'         // violet — slot prompts output
     case 'cellRegenerator':
-      return 'edge-motion-prompt' // Use purple color
+      return 'edge-image'          // yellow — regenerated image output
     case 'gridComposer':
-      return 'edge-kling-video' // Use emerald color
+      return 'edge-image'          // yellow — composed image output
     case 'llmPrompt':
-      return 'edge-motion-prompt' // Use pink color
+      return 'edge-prompt'         // violet — refined prompt output
     default:
       return 'edge-default'
   }
@@ -128,58 +130,46 @@ const sanitizeEdgesForStorage = (edges: WorkflowEdge[]) =>
 
 const isConnectionAllowed = (sourceType: NodeType, targetType: NodeType) => {
   if (sourceType === 'imageImport' && targetType === 'motionPrompt') return true
-  if (sourceType === 'imageImport' && targetType === 'nanoImage') return true
-  if (sourceType === 'nanoImage' && targetType === 'nanoImage') return true
+  if (sourceType === 'imageImport' && targetType === 'genImage') return true
+  if (sourceType === 'genImage' && targetType === 'genImage') return true
   if (sourceType === 'textPrompt' && targetType === 'imageImport') return true
-  if (sourceType === 'textPrompt' && targetType === 'nanoImage') return true
+  if (sourceType === 'textPrompt' && targetType === 'genImage') return true
   if (sourceType === 'textPrompt' && targetType === 'motionPrompt') return true
-  if (sourceType === 'motionPrompt' && targetType === 'nanoImage') return true
-  if (sourceType === 'motionPrompt' && targetType === 'geminiVideo') return true
-  if (sourceType === 'nanoImage' && targetType === 'geminiVideo') return true
-  if (sourceType === 'imageImport' && targetType === 'geminiVideo') return true
-  // Kling connections
-  if (sourceType === 'motionPrompt' && targetType === 'klingVideo') return true
-  if (sourceType === 'textPrompt' && targetType === 'klingVideo') return true
-  if (sourceType === 'nanoImage' && targetType === 'klingVideo') return true
-  if (sourceType === 'imageImport' && targetType === 'klingVideo') return true
+  if (sourceType === 'motionPrompt' && targetType === 'genImage') return true
+  if (sourceType === 'motionPrompt' && targetType === 'movie') return true
+  if (sourceType === 'textPrompt' && targetType === 'movie') return true
+  if (sourceType === 'genImage' && targetType === 'movie') return true
+  if (sourceType === 'imageImport' && targetType === 'movie') return true
   // Grid Node connections
   if (sourceType === 'textPrompt' && targetType === 'gridNode') return true
   if (sourceType === 'motionPrompt' && targetType === 'gridNode') return true
-  if (sourceType === 'gridNode' && targetType === 'nanoImage') return true
+  if (sourceType === 'gridNode' && targetType === 'genImage') return true
   // Cell Regenerator connections
   if (sourceType === 'gridNode' && targetType === 'cellRegenerator') return true
-  if (sourceType === 'nanoImage' && targetType === 'cellRegenerator') return true
+  if (sourceType === 'genImage' && targetType === 'cellRegenerator') return true
   if (sourceType === 'imageImport' && targetType === 'cellRegenerator') return true
-  if (sourceType === 'cellRegenerator' && targetType === 'nanoImage') return true
+  if (sourceType === 'cellRegenerator' && targetType === 'genImage') return true
   if (sourceType === 'cellRegenerator' && targetType === 'imageImport') return true
   // Grid Composer connections
   if (sourceType === 'gridNode' && targetType === 'gridComposer') return true
-  if (sourceType === 'nanoImage' && targetType === 'gridComposer') return true
+  if (sourceType === 'genImage' && targetType === 'gridComposer') return true
   if (sourceType === 'imageImport' && targetType === 'gridComposer') return true
   if (sourceType === 'cellRegenerator' && targetType === 'gridComposer') return true
-  if (sourceType === 'gridComposer' && targetType === 'nanoImage') return true
+  if (sourceType === 'gridComposer' && targetType === 'genImage') return true
   if (sourceType === 'gridComposer' && targetType === 'imageImport') return true
-  if (sourceType === 'gridComposer' && targetType === 'geminiVideo') return true
-  if (sourceType === 'gridComposer' && targetType === 'klingVideo') return true
-  // Sora Video connections
-  if (sourceType === 'motionPrompt' && targetType === 'soraVideo') return true
-  if (sourceType === 'textPrompt' && targetType === 'soraVideo') return true
-  if (sourceType === 'nanoImage' && targetType === 'soraVideo') return true
-  if (sourceType === 'imageImport' && targetType === 'soraVideo') return true
-  if (sourceType === 'gridComposer' && targetType === 'soraVideo') return true
-  if (sourceType === 'llmPrompt' && targetType === 'soraVideo') return true
+  if (sourceType === 'gridComposer' && targetType === 'movie') return true
+  if (sourceType === 'llmPrompt' && targetType === 'movie') return true
   // LLM Prompt connections
   if (sourceType === 'textPrompt' && targetType === 'llmPrompt') return true
   if (sourceType === 'motionPrompt' && targetType === 'llmPrompt') return true
   if (sourceType === 'imageImport' && targetType === 'llmPrompt') return true
-  if (sourceType === 'nanoImage' && targetType === 'llmPrompt') return true
+  if (sourceType === 'genImage' && targetType === 'llmPrompt') return true
   if (sourceType === 'gridComposer' && targetType === 'llmPrompt') return true
   if (sourceType === 'llmPrompt' && targetType === 'textPrompt') return true
-  if (sourceType === 'llmPrompt' && targetType === 'nanoImage') return true
+  if (sourceType === 'llmPrompt' && targetType === 'genImage') return true
   if (sourceType === 'llmPrompt' && targetType === 'motionPrompt') return true
   if (sourceType === 'llmPrompt' && targetType === 'gridNode') return true
-  if (sourceType === 'llmPrompt' && targetType === 'geminiVideo') return true
-  if (sourceType === 'llmPrompt' && targetType === 'klingVideo') return true
+  if (sourceType === 'llmPrompt' && targetType === 'movie') return true
   return false
 }
 
@@ -240,6 +230,48 @@ const getIncomingTextPrompt = (
 }
 
 const STORAGE_KEY = 'nano-banana-workflow-v3'
+
+function migrateNodes(nodes: WorkflowNode[]): WorkflowNode[] {
+  return nodes.map((n) => {
+    // nanoImage → genImage
+    if (n.type === ('nanoImage' as any)) {
+      return { ...n, type: 'genImage' as any, data: { ...n.data, provider: (n.data as any).provider || 'nanoBanana' } }
+    }
+    // geminiVideo → movie (provider: veo)
+    if (n.type === ('geminiVideo' as any)) {
+      const d = n.data as any
+      return { ...n, type: 'movie' as any, data: {
+        ...d, provider: 'veo',
+        veoModel: d.model, veoDuration: d.duration, veoMotionIntensity: d.motionIntensity, veoQuality: d.quality,
+        klingModel: 'kling-v1-6', klingDuration: 5, klingAspectRatio: '16:9', klingEnableMotionControl: false, klingCameraControl: 'none', klingMotionValue: 0,
+        soraModel: 'sora-2', soraDuration: 8, soraResolution: '1280x720',
+      }}
+    }
+    // klingVideo → movie (provider: kling)
+    if (n.type === ('klingVideo' as any)) {
+      const d = n.data as any
+      return { ...n, type: 'movie' as any, data: {
+        ...d, provider: 'kling',
+        klingModel: d.model, klingDuration: d.duration, klingAspectRatio: d.aspectRatio,
+        klingEnableMotionControl: d.enableMotionControl, klingCameraControl: d.cameraControl, klingMotionValue: d.motionValue,
+        klingEndImageUrl: d.endImageUrl, klingEndImageDataUrl: d.endImageDataUrl, klingTaskId: d.taskId,
+        veoModel: 'veo-3.1-generate-preview', veoDuration: 5, veoMotionIntensity: 'medium', veoQuality: 'high',
+        soraModel: 'sora-2', soraDuration: 8, soraResolution: '1280x720',
+      }}
+    }
+    // soraVideo → movie (provider: sora)
+    if (n.type === ('soraVideo' as any)) {
+      const d = n.data as any
+      return { ...n, type: 'movie' as any, data: {
+        ...d, provider: 'sora',
+        soraModel: d.model, soraDuration: d.duration, soraResolution: d.resolution, soraVideoId: d.videoId,
+        veoModel: 'veo-3.1-generate-preview', veoDuration: 5, veoMotionIntensity: 'medium', veoQuality: 'high',
+        klingModel: 'kling-v1-6', klingDuration: 5, klingAspectRatio: '16:9', klingEnableMotionControl: false, klingCameraControl: 'none', klingMotionValue: 0,
+      }}
+    }
+    return n
+  })
+}
 
 // Helper function to make error messages more user-friendly
 const formatErrorMessage = (error: unknown): string => {
@@ -315,18 +347,18 @@ const sanitizeNodesForStorage = (nodes: WorkflowNode[], forExport = false): Work
     }
     
     // Reset status for all generation nodes
-    if (node.type === 'nanoImage') {
+    if (node.type === 'genImage') {
       data.status = 'idle'
       delete data.error
       delete data.lastExecutionTime
     }
-    if (node.type === 'geminiVideo') {
+    if (node.type === 'movie') {
       data.status = 'idle'
       data.progress = 0
       delete data.error
       delete data.lastExecutionTime
     }
-    if (node.type === 'klingVideo') {
+    if (node.type === 'movie') {
       data.status = 'idle'
       data.progress = 0
       delete data.error
@@ -600,6 +632,8 @@ export const useFlowStore = create<FlowState>()(
         console.log('⚠️ 노드가 없음')
         return false
       }
+
+      nodes = migrateNodes(nodes)
       
       set({
         nodes,
@@ -616,6 +650,8 @@ export const useFlowStore = create<FlowState>()(
   },
   importWorkflow: (nodes, edges) => {
     try {
+      nodes = migrateNodes(nodes)
+
       const currentState = get()
       const existingNodes = currentState.nodes
       const existingEdges = currentState.edges
@@ -716,13 +752,13 @@ export const useFlowStore = create<FlowState>()(
       })
     }
   },
-  runNanoImageNode: async (id) => {
+  runGenImageNode: async (id) => {
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
-    if (!current || current.type !== 'nanoImage') return
+    if (!current || current.type !== 'genImage') return
 
     // ✅ Prevent duplicate execution
-    const currentData = current.data as NanoImageNodeData
+    const currentData = current.data as GenImageNodeData
     if (currentData.status === 'processing') {
       console.warn('⚠️ Node is already processing, skipping duplicate execution')
       return
@@ -816,12 +852,12 @@ export const useFlowStore = create<FlowState>()(
     let referenceSlotId: string | undefined
     let referenceSlotLabel: string | undefined
     let referenceCellRegeneratorId: string | undefined
-    const data = current.data as NanoImageNodeData
+    const data = current.data as GenImageNodeData
     const maxRefs = data.maxReferences || 3
 
     // 🔍 Debug: Log ALL edges for this node
     const allEdgesToThisNode = edges.filter((e) => e.target === id)
-    console.log(`🔍 Nano Image [${id}]: ALL incoming edges:`, allEdgesToThisNode.map((e) => ({
+    console.log(`🔍 Gen Image [${id}]: ALL incoming edges:`, allEdgesToThisNode.map((e) => ({
       source: e.source,
       sourceHandle: e.sourceHandle,
       targetHandle: e.targetHandle,
@@ -837,8 +873,8 @@ export const useFlowStore = create<FlowState>()(
         const imgData = refNode.data as ImageImportNodeData
         imageDataUrl = imgData.imageDataUrl
         refPrompt = getIncomingTextPrompt(refNode.id, edges, get().nodes) ?? imgData.referencePrompt
-      } else if (refNode.type === 'nanoImage') {
-        const imgData = refNode.data as NanoImageNodeData
+      } else if (refNode.type === 'genImage') {
+        const imgData = refNode.data as GenImageNodeData
         imageDataUrl = imgData.outputImageDataUrl
       } else if (refNode.type === 'gridComposer') {
         const imgData = refNode.data as any
@@ -847,7 +883,7 @@ export const useFlowStore = create<FlowState>()(
         const imgData = refNode.data as any
         let cellId = refEdge.sourceHandle
 
-        console.log(`🔍 Nano Image: Cell Regenerator connection found`, {
+        console.log(`🔍 Gen Image: Cell Regenerator connection found`, {
           sourceHandle: cellId,
           targetHandle: refEdge.targetHandle,
           availableCells: Object.keys(imgData.regeneratedImages || {}),
@@ -857,7 +893,7 @@ export const useFlowStore = create<FlowState>()(
         if ((!cellId || cellId === 'output' || !imgData.regeneratedImages?.[cellId]) &&
             imgData.regeneratedImages && Object.keys(imgData.regeneratedImages).length > 0) {
           const firstCell = Object.keys(imgData.regeneratedImages)[0]
-          console.warn(`⚠️ Nano Image: Invalid cellId "${cellId}", falling back to "${firstCell}"`)
+          console.warn(`⚠️ Gen Image: Invalid cellId "${cellId}", falling back to "${firstCell}"`)
           cellId = firstCell
         }
 
@@ -867,9 +903,9 @@ export const useFlowStore = create<FlowState>()(
           referenceSlotLabel = referenceSlotLabel ||
             imgData.slots?.find((slot: any) => slot.id === cellId)?.label
           referenceCellRegeneratorId = referenceCellRegeneratorId || refNode.id
-          console.log(`✅ Nano Image: Using cell image for ${cellId}`)
+          console.log(`✅ Gen Image: Using cell image for ${cellId}`)
         } else {
-          console.error(`❌ Nano Image: No cell image found for "${cellId}"`)
+          console.error(`❌ Gen Image: No cell image found for "${cellId}"`)
         }
       }
 
@@ -884,7 +920,7 @@ export const useFlowStore = create<FlowState>()(
           const actualDataUrl = await getImage(imageDataUrl)
           if (actualDataUrl) {
             referenceImages.push(actualDataUrl)
-            console.log(`✅ Nano Image: Loaded ${label} reference (${actualDataUrl.length} chars)`)
+            console.log(`✅ Gen Image: Loaded ${label} reference (${actualDataUrl.length} chars)`)
           } else {
             console.warn(`⚠️ Failed to load reference image: ${imageDataUrl}`)
           }
@@ -893,7 +929,7 @@ export const useFlowStore = create<FlowState>()(
         }
       } else {
         referenceImages.push(imageDataUrl)
-        console.log(`✅ Nano Image: Direct ${label} reference (${imageDataUrl.length} chars)`)
+        console.log(`✅ Gen Image: Direct ${label} reference (${imageDataUrl.length} chars)`)
       }
       if (refPrompt) {
         referencePrompts.push(refPrompt)
@@ -914,13 +950,13 @@ export const useFlowStore = create<FlowState>()(
 
     // Strategy 2: If no ref-N matches found, check ALL edges for Cell Regenerator connections
     if (referenceImages.length === 0) {
-      console.log(`⚠️ Nano Image: No ref-N handle matches. Checking ALL edges for Cell Regenerator...`)
+      console.log(`⚠️ Gen Image: No ref-N handle matches. Checking ALL edges for Cell Regenerator...`)
       for (const edge of allEdgesToThisNode) {
         const sourceNode = get().nodes.find((n) => n.id === edge.source)
-        if (sourceNode && ['imageImport', 'nanoImage', 'gridComposer', 'cellRegenerator'].includes(sourceNode.type!)) {
+        if (sourceNode && ['imageImport', 'genImage', 'gridComposer', 'cellRegenerator'].includes(sourceNode.type!)) {
           // Skip prompt-handle connections
           if (edge.targetHandle === 'prompt') continue
-          console.log(`🔄 Nano Image: Found image source via fallback: ${sourceNode.type} (sourceHandle=${edge.sourceHandle}, targetHandle=${edge.targetHandle})`)
+          console.log(`🔄 Gen Image: Found image source via fallback: ${sourceNode.type} (sourceHandle=${edge.sourceHandle}, targetHandle=${edge.targetHandle})`)
           const { imageDataUrl, refPrompt } = await resolveRefImage(sourceNode, edge)
           await pushRefImage(imageDataUrl, refPrompt, `fallback-${sourceNode.type}`)
           if (referenceImages.length > 0) break // Use first valid reference
@@ -928,7 +964,7 @@ export const useFlowStore = create<FlowState>()(
       }
     }
 
-    console.log(`📊 Nano Image: Final reference count = ${referenceImages.length}`)
+    console.log(`📊 Gen Image: Final reference count = ${referenceImages.length}`)
 
     // 🧭 If reference comes from Cell Regenerator, COMPLETELY REPLACE the prompt
     // The Grid Node's prompt contains FULL GRID instructions (9 cells, 3x3 layout etc.)
@@ -963,7 +999,7 @@ ${sceneDescription ? `${sceneDescription}\n\n` : ''}Use the reference image as v
 Recreate the scene with high quality, photorealistic rendering.
 Remove any text labels, borders, or grid artifacts from the reference.`
 
-      console.log('🎯 Nano Image v4: GRID PROMPT REPLACED with single-image prompt', {
+      console.log('🎯 Gen Image v4: GRID PROMPT REPLACED with single-image prompt', {
         referenceSlotId,
         sceneDescription: sceneDescription.substring(0, 80),
         newPromptLength: prompt.length,
@@ -979,7 +1015,7 @@ Remove any text labels, borders, or grid artifacts from the reference.`
     if (referenceImages.length === 0) {
       const imageNode =
         incoming.find((node) => node.type === 'imageImport') ??
-        incoming.find((node) => node.type === 'nanoImage') ??
+        incoming.find((node) => node.type === 'genImage') ??
         incoming.find((node) => node.type === 'gridComposer') ??
         incoming.find((node) => node.type === 'cellRegenerator')
 
@@ -987,8 +1023,8 @@ Remove any text labels, borders, or grid artifacts from the reference.`
       
       if (imageNode?.type === 'imageImport') {
         inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
-      } else if (imageNode?.type === 'nanoImage') {
-        inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+      } else if (imageNode?.type === 'genImage') {
+        inputImageDataUrl = (imageNode.data as GenImageNodeData).outputImageDataUrl
       } else if (imageNode?.type === 'gridComposer') {
         const imgData = imageNode.data as any
         inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
@@ -1039,8 +1075,8 @@ Remove any text labels, borders, or grid artifacts from the reference.`
 
       if (charNode.type === 'imageImport') {
         charImageDataUrl = (charNode.data as ImageImportNodeData).imageDataUrl
-      } else if (charNode.type === 'nanoImage') {
-        charImageDataUrl = (charNode.data as NanoImageNodeData).outputImageDataUrl
+      } else if (charNode.type === 'genImage') {
+        charImageDataUrl = (charNode.data as GenImageNodeData).outputImageDataUrl
       } else if (charNode.type === 'gridComposer') {
         const imgData = charNode.data as any
         charImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
@@ -1108,7 +1144,7 @@ CRITICAL RULES for character consistency:
       return
     }
 
-    console.log('🔥🔥🔥 Nano Image v5: Code is running! 🔥🔥🔥', {
+    console.log('🔥🔥🔥 Gen Image v5: Code is running! 🔥🔥🔥', {
       referenceCount: referenceImages.length,
       characterCount: characterImages.length,
       referenceSlotId,
@@ -1147,7 +1183,7 @@ CRITICAL RULES for character consistency:
       // Get reference mode from LLM Prompt Helper
       const referenceMode = (llmPromptNode?.data as any)?.referenceMode || 'exact'
       
-      // Extract Grid Composer label info (for Nano Banana)
+      // Extract Grid Composer label info (for Gen Image)
       let gridLabelInfoForNano = ''
       if (gridComposerNode && gridComposerNode.type === 'gridComposer') {
         const gridData = gridComposerNode.data as any
@@ -1505,7 +1541,7 @@ ${enhancedPrompt}`
       
       const model = data.model ?? 'gemini-3-pro-image-preview'
       
-      console.log('🎨 Nano Image Generation:', {
+      console.log('🎨 Gen Image Generation:', {
         model,
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
@@ -1550,12 +1586,12 @@ ${enhancedPrompt}`
       let savedImageRef = result.imageDataUrl
       try {
         const imageId = `nano-output-${id}-${Date.now()}`
-        console.log('💾 Nano Image: IndexedDB/S3에 출력 이미지 저장 시작...', imageId)
+        console.log('💾 Gen Image: IndexedDB/S3에 출력 이미지 저장 시작...', imageId)
         
         savedImageRef = await saveImage(imageId, result.imageDataUrl, id, true)
-        console.log('✅ Nano Image: 출력 이미지 저장 완료', savedImageRef)
+        console.log('✅ Gen Image: 출력 이미지 저장 완료', savedImageRef)
       } catch (error) {
-        console.error('❌ Nano Image: 출력 이미지 저장 실패, DataURL을 직접 사용', error)
+        console.error('❌ Gen Image: 출력 이미지 저장 실패, DataURL을 직접 사용', error)
         // 폴백: DataURL을 직접 사용 (비권장)
       }
 
@@ -1585,13 +1621,25 @@ ${enhancedPrompt}`
       set({ abortControllers: new Map(controllers) })
     }
   },
+  runMovieNode: async (id) => {
+    const node = get().nodes.find((n) => n.id === id)
+    if (!node) return
+    const provider = (node.data as any).provider
+    if (provider === 'kling') {
+      return get().runKlingNode(id)
+    } else if (provider === 'sora') {
+      return get().runSoraNode(id)
+    } else {
+      return get().runGeminiNode(id)
+    }
+  },
   runGeminiNode: async (id) => {
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
-    if (!current || current.type !== 'geminiVideo') return
+    if (!current || current.type !== 'movie') return
 
     // ✅ Prevent duplicate execution
-    const currentData = current.data as GeminiVideoNodeData
+    const currentData = current.data as MovieNodeData
     if (currentData.status === 'processing') {
       console.warn('⚠️ Gemini node is already processing')
       return
@@ -1646,7 +1694,7 @@ ${enhancedPrompt}`
     const incoming = getIncomingNodes(id, edges, get().nodes)
     const imageNode =
       incoming.find((node) => node.type === 'imageImport') ??
-      incoming.find((node) => node.type === 'nanoImage') ??
+      incoming.find((node) => node.type === 'genImage') ??
       incoming.find((node) => node.type === 'gridComposer') ??
       incoming.find((node) => node.type === 'cellRegenerator')
     const promptNode = incoming.find(
@@ -1659,9 +1707,9 @@ ${enhancedPrompt}`
     if (imageNode?.type === 'imageImport') {
       inputImageUrl = (imageNode.data as ImageImportNodeData).imageUrl
       inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
-    } else if (imageNode?.type === 'nanoImage') {
-      inputImageUrl = (imageNode.data as NanoImageNodeData).outputImageUrl
-      inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+    } else if (imageNode?.type === 'genImage') {
+      inputImageUrl = (imageNode.data as GenImageNodeData).outputImageUrl
+      inputImageDataUrl = (imageNode.data as GenImageNodeData).outputImageDataUrl
     } else if (imageNode?.type === 'gridComposer') {
       const imgData = imageNode.data as any
       inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
@@ -1792,7 +1840,7 @@ ${enhancedPrompt}`
     
     console.log('🎬 Gemini Video 생성 시작:', {
       prompt: inputPrompt.substring(0, 50) + '...',
-      model: (current.data as GeminiVideoNodeData).model,
+      model: (current.data as MovieNodeData).veoModel,
       imageType: actualInputImageDataUrl?.substring(0, 30),
       imageSize: actualInputImageDataUrl?.length,
     })
@@ -1812,7 +1860,7 @@ ${enhancedPrompt}`
 
     const progressTimer = setInterval(() => {
       updateNode((prev) => {
-        const data = prev as GeminiVideoNodeData
+        const data = prev as MovieNodeData
         if (data.status !== 'processing') return prev
         return {
           ...prev,
@@ -1826,7 +1874,13 @@ ${enhancedPrompt}`
         throw new Error('작업이 취소되었습니다.')
       }
 
-      const settings = current.data as GeminiVideoNodeData
+      const movieData = current.data as MovieNodeData
+      const settings = {
+        model: movieData.veoModel,
+        duration: movieData.veoDuration,
+        quality: movieData.veoQuality,
+        motionIntensity: movieData.veoMotionIntensity,
+      }
       
       // ✅ Apply retry logic
       const outputVideoUrl = await retryWithBackoff(
@@ -2022,9 +2076,9 @@ ${enhancedPrompt}`
         console.log(`✅ Cell ${slot.id} saved: ${storageRef}`)
       }
 
-      // 7. Update node data + invalidate downstream Nano Banana outputs
+      // 7. Update node data + invalidate downstream Gen Image outputs
       const downstreamNanoEdges = edges.filter(
-        (e) => e.source === id && get().nodes.find((n) => n.id === e.target)?.type === 'nanoImage'
+        (e) => e.source === id && get().nodes.find((n) => n.id === e.target)?.type === 'genImage'
       )
       const downstreamNanoIds = new Set(downstreamNanoEdges.map((e) => e.target))
 
@@ -2041,9 +2095,9 @@ ${enhancedPrompt}`
               },
             }
           }
-          // 하위 Nano Banana 노드의 이전 출력을 초기화 (재생성 유도)
+          // 하위 Gen Image 노드의 이전 출력을 초기화 (재생성 유도)
           if (downstreamNanoIds.has(node.id)) {
-            console.log(`🔄 Auto-invalidating downstream Nano Banana: ${node.id}`)
+            console.log(`🔄 Auto-invalidating downstream Gen Image: ${node.id}`)
             return {
               ...node,
               data: {
@@ -2081,10 +2135,10 @@ ${enhancedPrompt}`
   runKlingNode: async (id) => {
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
-    if (!current || current.type !== 'klingVideo') return
+    if (!current || current.type !== 'movie') return
 
     // ✅ Prevent duplicate execution
-    const currentData = current.data as KlingVideoNodeData
+    const currentData = current.data as MovieNodeData
     if (currentData.status === 'processing') {
       console.warn('⚠️ Kling node is already processing')
       return
@@ -2127,7 +2181,7 @@ ${enhancedPrompt}`
       })
     }
 
-    const imageNodeTypes = new Set(['imageImport', 'nanoImage', 'gridComposer', 'cellRegenerator'])
+    const imageNodeTypes = new Set(['imageImport', 'genImage', 'gridComposer', 'cellRegenerator'])
     
     // Start Image (기본 이미지) - 'start' 핸들 또는 핸들 ID 없는 연결
     const startImageEdges = edges.filter(
@@ -2157,7 +2211,7 @@ ${enhancedPrompt}`
     )
     const endImageNode = endImageEdges.find((e) => {
       const node = nodes.find((n) => n.id === e.source)
-      return node?.type === 'imageImport' || node?.type === 'nanoImage' || node?.type === 'gridComposer' || node?.type === 'cellRegenerator'
+      return node?.type === 'imageImport' || node?.type === 'genImage' || node?.type === 'gridComposer' || node?.type === 'cellRegenerator'
     })
     const endImageNodeData = endImageNode ? nodes.find((n) => n.id === endImageNode.source) : undefined
 
@@ -2175,8 +2229,8 @@ ${enhancedPrompt}`
       const imgData = startImageNodeData.data as ImageImportNodeData
       inputImageUrl = imgData.imageUrl
       inputImageDataUrl = imgData.imageDataUrl
-    } else if (startImageNodeData?.type === 'nanoImage') {
-      const imgData = startImageNodeData.data as NanoImageNodeData
+    } else if (startImageNodeData?.type === 'genImage') {
+      const imgData = startImageNodeData.data as GenImageNodeData
       inputImageUrl = imgData.outputImageUrl
       inputImageDataUrl = imgData.outputImageDataUrl
     } else if (startImageNodeData?.type === 'gridComposer') {
@@ -2225,8 +2279,8 @@ ${enhancedPrompt}`
       const imgData = endImageNodeData.data as ImageImportNodeData
       endImageUrl = imgData.imageUrl
       endImageDataUrl = imgData.imageDataUrl
-    } else if (endImageNodeData?.type === 'nanoImage') {
-      const imgData = endImageNodeData.data as NanoImageNodeData
+    } else if (endImageNodeData?.type === 'genImage') {
+      const imgData = endImageNodeData.data as GenImageNodeData
       endImageUrl = imgData.outputImageUrl
       endImageDataUrl = imgData.outputImageDataUrl
     } else if (endImageNodeData?.type === 'gridComposer') {
@@ -2389,7 +2443,7 @@ ${enhancedPrompt}`
     console.log('🎬 Kling Video 생성 시작:', {
       useMock: !klingApiKey,
       prompt: inputPrompt.substring(0, 50) + '...',
-      model: (current.data as KlingVideoNodeData).model,
+      model: (current.data as MovieNodeData).klingModel,
       startImageType: actualStartImageDataUrl?.substring(0, 30),
       startImageSize: actualStartImageDataUrl?.length,
       hasEndImage: !!actualEndImageDataUrl,
@@ -2411,7 +2465,7 @@ ${enhancedPrompt}`
 
     const progressTimer = setInterval(() => {
       updateNode((prev) => {
-        const data = prev as KlingVideoNodeData
+        const data = prev as MovieNodeData
         if (data.status !== 'processing') return prev
         return {
           ...prev,
@@ -2432,7 +2486,15 @@ ${enhancedPrompt}`
         throw new Error('작업이 취소되었습니다.')
       }
 
-      const settings = current.data as KlingVideoNodeData
+      const movieData = current.data as MovieNodeData
+      const settings = {
+        model: movieData.klingModel,
+        duration: movieData.klingDuration,
+        aspectRatio: movieData.klingAspectRatio,
+        enableMotionControl: movieData.klingEnableMotionControl,
+        cameraControl: movieData.klingCameraControl,
+        motionValue: movieData.klingMotionValue,
+      }
       
       // Camera Control 설정
       const cameraControl = settings.enableMotionControl && settings.cameraControl !== 'none'
@@ -2500,9 +2562,9 @@ ${enhancedPrompt}`
   runSoraNode: async (id) => {
     const { nodes, edges, abortControllers } = get()
     const current = nodes.find((node) => node.id === id)
-    if (!current || current.type !== 'soraVideo') return
+    if (!current || current.type !== 'movie') return
 
-    const currentData = current.data as SoraVideoNodeData
+    const currentData = current.data as MovieNodeData
     if (currentData.status === 'processing') {
       console.warn('⚠️ Sora node is already processing')
       return
@@ -2545,7 +2607,7 @@ ${enhancedPrompt}`
       })
     }
 
-    const imageNodeTypes = new Set(['imageImport', 'nanoImage', 'gridComposer', 'cellRegenerator'])
+    const imageNodeTypes = new Set(['imageImport', 'genImage', 'gridComposer', 'cellRegenerator'])
 
     // Image 노드 (image 핸들)
     const imageEdges = edges.filter(
@@ -2571,8 +2633,8 @@ ${enhancedPrompt}`
       const imgData = imageNodeData.data as ImageImportNodeData
       inputImageUrl = imgData.imageUrl
       inputImageDataUrl = imgData.imageDataUrl
-    } else if (imageNodeData?.type === 'nanoImage') {
-      const imgData = imageNodeData.data as NanoImageNodeData
+    } else if (imageNodeData?.type === 'genImage') {
+      const imgData = imageNodeData.data as GenImageNodeData
       inputImageUrl = imgData.outputImageUrl
       inputImageDataUrl = imgData.outputImageDataUrl
     } else if (imageNodeData?.type === 'gridComposer') {
@@ -2662,13 +2724,13 @@ ${enhancedPrompt}`
     console.log('🎬 Sora Video 생성 시작:', {
       useMock: !openaiApiKey,
       prompt: inputPrompt.substring(0, 50) + '...',
-      model: (current.data as SoraVideoNodeData).model,
+      model: (current.data as MovieNodeData).soraModel,
       hasImage: !!actualImageDataUrl,
     })
 
     const progressTimer = setInterval(() => {
       updateNode((prev) => {
-        const data = prev as SoraVideoNodeData
+        const data = prev as MovieNodeData
         if (data.status !== 'processing') return prev
         return {
           ...prev,
@@ -2682,7 +2744,12 @@ ${enhancedPrompt}`
         throw new Error('작업이 취소되었습니다.')
       }
 
-      const settings = current.data as SoraVideoNodeData
+      const movieData = current.data as MovieNodeData
+      const settings = {
+        model: movieData.soraModel,
+        duration: movieData.soraDuration,
+        resolution: movieData.soraResolution,
+      }
 
       const outputVideoUrl = await retryWithBackoff(
         () => client.generateVideo(
@@ -2763,13 +2830,13 @@ ${enhancedPrompt}`
         continue
       }
 
-      if (current.type === 'nanoImage') {
+      if (current.type === 'genImage') {
         const promptNode = incoming.find(
           (node) => node.type === 'textPrompt' || node.type === 'motionPrompt',
         )
         const imageNode =
           incoming.find((node) => node.type === 'imageImport') ??
-          incoming.find((node) => node.type === 'nanoImage') ??
+          incoming.find((node) => node.type === 'genImage') ??
           incoming.find((node) => node.type === 'gridComposer')
         const prompt =
           promptNode?.type === 'textPrompt'
@@ -2782,8 +2849,8 @@ ${enhancedPrompt}`
         
         if (imageNode?.type === 'imageImport') {
           inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
-        } else if (imageNode?.type === 'nanoImage') {
-          inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+        } else if (imageNode?.type === 'genImage') {
+          inputImageDataUrl = (imageNode.data as GenImageNodeData).outputImageDataUrl
         } else if (imageNode?.type === 'gridComposer') {
           const imgData = imageNode.data as any
           inputImageDataUrl = imgData.composedImageDataUrl || imgData.composedImageUrl
@@ -2811,7 +2878,7 @@ ${enhancedPrompt}`
         }))
 
         try {
-          const data = current.data as NanoImageNodeData
+          const data = current.data as GenImageNodeData
           const finalPrompt = referencePrompt
             ? `${prompt}, focus on: ${referencePrompt}`
             : prompt
@@ -2854,10 +2921,10 @@ ${enhancedPrompt}`
         }))
       }
 
-      if (current.type === 'geminiVideo') {
+      if (current.type === 'movie') {
         const imageNode =
           incoming.find((node) => node.type === 'imageImport') ??
-          incoming.find((node) => node.type === 'nanoImage') ??
+          incoming.find((node) => node.type === 'genImage') ??
           incoming.find((node) => node.type === 'gridComposer')
         const promptNode = incoming.find(
           (node) => node.type === 'motionPrompt' || node.type === 'textPrompt',
@@ -2869,9 +2936,9 @@ ${enhancedPrompt}`
         if (imageNode?.type === 'imageImport') {
           inputImageUrl = (imageNode.data as ImageImportNodeData).imageUrl
           inputImageDataUrl = (imageNode.data as ImageImportNodeData).imageDataUrl
-        } else if (imageNode?.type === 'nanoImage') {
-          inputImageUrl = (imageNode.data as NanoImageNodeData).outputImageUrl
-          inputImageDataUrl = (imageNode.data as NanoImageNodeData).outputImageDataUrl
+        } else if (imageNode?.type === 'genImage') {
+          inputImageUrl = (imageNode.data as GenImageNodeData).outputImageUrl
+          inputImageDataUrl = (imageNode.data as GenImageNodeData).outputImageDataUrl
         } else if (imageNode?.type === 'gridComposer') {
           const imgData = imageNode.data as any
           inputImageUrl = imgData.composedImageUrl || imgData.composedImageDataUrl
@@ -2906,7 +2973,7 @@ ${enhancedPrompt}`
 
         const progressTimer = setInterval(() => {
           updateNode(nodeId, (prev) => {
-            const data = prev as GeminiVideoNodeData
+            const data = prev as MovieNodeData
             if (data.status !== 'processing') return prev
             return {
               ...prev,
@@ -2916,17 +2983,23 @@ ${enhancedPrompt}`
         }, 500)
 
         try {
-          const settings = current.data as GeminiVideoNodeData
+          const movieData = current.data as MovieNodeData
+          const veoSettings = {
+            model: movieData.veoModel,
+            duration: movieData.veoDuration,
+            quality: movieData.veoQuality,
+            motionIntensity: movieData.veoMotionIntensity,
+          }
           const outputVideoUrl = await client.generateMedia(
             inputPrompt,
             {
               mediaType: 'video',
-              duration: settings.duration,
-              quality: settings.quality,
-              motionIntensity: settings.motionIntensity,
+              duration: veoSettings.duration,
+              quality: veoSettings.quality,
+              motionIntensity: veoSettings.motionIntensity,
             },
             inputImageDataUrl,
-            settings.model,
+            veoSettings.model,
           )
 
           updateNode(nodeId, (prev) => ({
@@ -3025,7 +3098,7 @@ ${enhancedPrompt}`
       const imageNode = get().nodes.find((n) => n.id === imageEdge.source)
       if (imageNode?.type === 'imageImport') {
         referenceImageDataUrl = (imageNode.data as any).imageDataUrl
-      } else if (imageNode?.type === 'nanoImage') {
+      } else if (imageNode?.type === 'genImage') {
         // Try both outputImageDataUrl and outputImageUrl
         const nanoData = imageNode.data as any
         referenceImageDataUrl = nanoData.outputImageDataUrl || nanoData.outputImageUrl
@@ -3856,6 +3929,10 @@ Only output the detailed camera description, no explanations or meta-commentary.
               }
             }
             
+            if (state.nodes) {
+              state.nodes = migrateNodes(state.nodes as any) as any
+            }
+
             console.log('✅ Zustand persist: 상태 복원됨', {
               nodeCount: state.nodes?.length ?? 0,
               edgeCount: state.edges?.length ?? 0,

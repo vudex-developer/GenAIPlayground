@@ -112,22 +112,25 @@ export function cleanupOldImages(nodes: any[]): any[] {
  * 긴급 정리 - 모든 이미지 DataUrl 제거
  */
 export function emergencyCleanup(nodes: any[]): any[] {
-  console.warn('🚨 EMERGENCY CLEANUP: Removing all image data URLs')
+  console.warn('🚨 EMERGENCY CLEANUP: Removing large image data URLs (preserving idb:/s3: references)')
   
+  const isStorageRef = (str: string | undefined) =>
+    str?.startsWith('idb:') || str?.startsWith('s3:')
+
   return nodes.map(node => {
     const cleanedData = { ...node.data }
     
-    // 모든 DataUrl 제거
-    if (cleanedData.outputImageDataUrl) {
+    // idb:/s3: 참조는 보존 (작은 문자열), 큰 DataURL만 제거
+    if (cleanedData.outputImageDataUrl && !isStorageRef(cleanedData.outputImageDataUrl)) {
       delete cleanedData.outputImageDataUrl
     }
-    if (cleanedData.imageDataUrl) {
+    if (cleanedData.imageDataUrl && !isStorageRef(cleanedData.imageDataUrl)) {
       delete cleanedData.imageDataUrl
     }
-    if (cleanedData.composedImageDataUrl) {
+    if (cleanedData.composedImageDataUrl && !isStorageRef(cleanedData.composedImageDataUrl)) {
       delete cleanedData.composedImageDataUrl
     }
-    if (cleanedData.referenceImageDataUrl) {
+    if (cleanedData.referenceImageDataUrl && !isStorageRef(cleanedData.referenceImageDataUrl)) {
       delete cleanedData.referenceImageDataUrl
     }
     

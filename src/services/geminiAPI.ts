@@ -201,7 +201,7 @@ export class GeminiAPIClient {
 
     if (!response.ok) {
       const errorText = await response.text()
-      throw new Error(`Nano Image 요청 실패: ${errorText}`)
+      throw new Error(`Gen Image 요청 실패: ${errorText}`)
     }
 
     const result = await response.json()
@@ -300,7 +300,7 @@ export class GeminiAPIClient {
       // 진행 상황 로그
       const elapsedMinutes = Math.floor((attempt * 10) / 60)
       const elapsedSeconds = (attempt * 10) % 60
-      console.log(`🎬 Gemini Video 진행 중... ${elapsedMinutes}분 ${elapsedSeconds}초 (${attempt + 1}/${maxAttempts})`)
+      console.log(`🎬 Movie (Veo) 진행 중... ${elapsedMinutes}분 ${elapsedSeconds}초 (${attempt + 1}/${maxAttempts})`)
       
       await sleep(10000) // 10초 대기
       

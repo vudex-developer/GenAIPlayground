@@ -93,8 +93,8 @@ export const OnboardingGuide = () => {
           <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-4">
             <h4 className="text-sm font-semibold text-cyan-400 mb-2">💡 빠른 시작</h4>
             <ul className="space-y-1 text-xs text-slate-300">
-              <li>• <strong>이미지 생성:</strong> TextPrompt → Nano Banana</li>
-              <li>• <strong>비디오 생성:</strong> ImageImport → MotionPrompt → Kling Video</li>
+              <li>• <strong>이미지 생성:</strong> TextPrompt → Gen Image</li>
+              <li>• <strong>비디오 생성:</strong> ImageImport → MotionPrompt → Movie</li>
               <li>• <strong>단축키:</strong> ⌘Z (되돌리기), ⌘⇧Z (다시 실행)</li>
             </ul>
           </div>
